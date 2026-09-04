@@ -15,3 +15,11 @@ Dépôt public alimenté chaque matin par GitHub Actions (`relais.py`, biblioth�
 - Le workflow `relais` se lance à 05:40 UTC ; l'entrée `full` du lancement manuel force un recalcul complet.
 
 Exécution locale : `python relais.py` (variables `RELAIS_FULL`, `RELAIS_SPOT_DEBUT`, `RELAIS_JORF_JOURS`).
+
+## Résumé BDNB par département (`bdnb.json`)
+
+Workflow `bdnb` (GitHub Actions, déclenchement manuel ou le 5 de chaque mois) : pour chaque département demandé (ou absent du fichier, ou d'un autre millésime), il télécharge l'export départemental de la BDNB (CSTB, `open-data.s3.fr-par.scw.cloud`, 0,3 à 1,5 Go), exécute `prospects_bdnb.py --relais bdnb.json --sans-excel --nettoyer` et pousse le résultat après chaque département (jusqu'à 12 par run, délai 5 h 40).
+
+`bdnb.json` = `{ _meta: {maj, millesime, hypotheses, departements}, deps: { "59": {millesime, calcule, batiments, score60, score80, avec_proprietaire, proteges, hta, chantier_recent, emprise_m2, kwc, mwh_an, conso_pro_mwh, secteurs, kwc_secteurs, communes[5], proprietaires[5], permis?} } }` — bâtiments professionnels d'emprise ≥ 400 m² et de potentiel > 36 kWc, score 0-100 (toiture, adéquation consommation, propriétaire identifié, HTA, chantier récent, contraintes patrimoniales). Lu par la page « Où prospecter » de SuiviMarché (composante « gisement bâti » du score et argumentaire).
+
+`prospects_bdnb.py` est le même fichier que dans le dépôt SuiviMarché (il y produit en plus les Excel `prospects_<dep>.xlsx` en local) : modifier les deux ensemble.

@@ -1,0 +1,84 @@
+name: bdnb
+
+# Résumé BDNB par département pour la carte « Où prospecter » de SuiviMarché.
+# Télécharge l'export départemental de la BDNB (CSTB, 0,3 à 1,5 Go), calcule les prospects toiture
+# (bâtiments professionnels ≥ 400 m²) avec prospects_bdnb.py et publie le résumé dans bdnb.json.
+# Le zip est supprimé après chaque département (disque du runner limité) ; bdnb.json est poussé
+# après chaque département pour ne rien perdre si le délai est dépassé.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deps:
+        description: 'Départements à traiter, séparés par des espaces (vide = tous ceux absents ou d’un autre millésime)'
+        type: string
+        default: ''
+      millesime:
+        description: 'Millésime BDNB (dossier open-data.s3.fr-par.scw.cloud/bdnb_millesime_<millesime>)'
+        type: string
+        default: '2026-02-a'
+      max:
+        description: 'Nombre maximal de départements pour ce run'
+        type: string
+        default: '12'
+  schedule:
+    - cron: '20 1 5 * *'   # le 5 de chaque mois à 01:20 UTC : complète les départements manquants
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bdnb
+  cancel-in-progress: false
+
+jobs:
+  bdnb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dépendances
+        run: pip install --quiet pandas
+      - name: Départements à traiter
+        id: liste
+        env:
+          DEPS: ${{ inputs.deps }}
+          MILLESIME: ${{ inputs.millesime || '2026-02-a' }}
+          MAX: ${{ inputs.max || '12' }}
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          tous = ['02','08','10','14','18','21','22','25','27','28','29','35','36','37','39','41','44','45','49','50','51','52','53','54','55','56','57','58','59','60','61','62','67','68','70','71','72','75','76','77','78','80','85','88','89','90','91','92','93','94','95']
+          m = os.environ['MILLESIME']; voulus = [d.zfill(2) for d in os.environ['DEPS'].split()]
+          try: deja = json.load(open('bdnb.json', encoding='utf-8')).get('deps', {})
+          except Exception: deja = {}
+          if not voulus: voulus = [d for d in tous if d not in deja or deja[d].get('millesime') != m]
+          voulus = voulus[:int(os.environ['MAX'] or 12)]
+          print('deps=' + ' '.join(voulus)); print('n=' + str(len(voulus)))
+          EOF
+          cat "$GITHUB_OUTPUT"
+      - name: Traitement et publication département par département
+        if: steps.liste.outputs.n != '0'
+        env:
+          MILLESIME: ${{ inputs.millesime || '2026-02-a' }}
+        run: |
+          git config user.name 'relais-bot'
+          git config user.email 'relais-bot@users.noreply.github.com'
+          mkdir -p /tmp/bdnb
+          for d in ${{ steps.liste.outputs.deps }}; do
+            echo "=== Département $d ==="
+            if python prospects_bdnb.py "$d" --telecharger --millesime "$MILLESIME" --dossier /tmp/bdnb --relais bdnb.json --sans-excel --nettoyer; then
+              git add bdnb.json
+              if git diff --cached --quiet; then echo "Aucun changement"; else
+                git commit -q -m "BDNB $d ($MILLESIME)"
+                for i in 1 2 3 4 5; do git pull --rebase -q && git push -q && break || { echo "push refusé, nouvel essai $i"; sleep 30; }; done
+              fi
+            else
+              echo "Département $d en échec (voir le journal)"
+            fi
+            rm -f /tmp/bdnb/*.zip /tmp/bdnb/*.part
+            df -h /tmp | tail -1
+          done
