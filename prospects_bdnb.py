@@ -108,9 +108,11 @@ def ecrire_relais(path, dep, r):
         except Exception as e: print('  (relais illisible, recréé :', e, ')'); data = {}
     deps = data.get('deps') if isinstance(data.get('deps'), dict) else {}
     deps[dep] = r
-    data = {'_meta': {'app': 'SuiviMarché', 'source': 'BDNB (CSTB, data.gouv.fr) — prospects_bdnb.py', 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                      'millesime': r['millesime'], 'hypotheses': {'emprise_min_m2': EMPRISE_MIN, 'part_toiture': PART_TOITURE, 'm2_par_kwc': M2_PAR_KWC, 'productible_kwh_kwc': PRODUCTIBLE, 'kwc_min': KWC_MIN},
-                      'departements': len(deps)}, 'deps': dict(sorted(deps.items()))}
+    meta = dict(data.get('_meta') or {})   # conserve millesime_serveur / verifie posés par le workflow
+    meta.update({'app': 'SuiviMarché', 'source': 'BDNB (CSTB, data.gouv.fr) — prospects_bdnb.py', 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                 'millesime': r['millesime'], 'hypotheses': {'emprise_min_m2': EMPRISE_MIN, 'part_toiture': PART_TOITURE, 'm2_par_kwc': M2_PAR_KWC, 'productible_kwh_kwc': PRODUCTIBLE, 'kwc_min': KWC_MIN},
+                 'departements': len(deps)})
+    data = {'_meta': meta, 'deps': dict(sorted(deps.items()))}
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
     os.replace(tmp, path); print(f'→ relais {path} : {len(deps)} département(s)')
