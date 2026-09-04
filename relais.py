@@ -15,6 +15,7 @@ Variables d'environnement (facultatives) :
   RELAIS_FULL=1          recalcul complet du spot et relecture de toutes les archives JORF
   RELAIS_SPOT_DEBUT      premier mois du spot (AAAA-MM, défaut 2015-01)
   RELAIS_JORF_JOURS      profondeur initiale des archives JORF en jours (défaut 400)
+  RELAIS_JORF_BUDGET     secondes allouées à la lecture des archives par passe (défaut 1500)
 """
 import datetime as dt
 import io
@@ -26,6 +27,7 @@ import tarfile
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo('Europe/Paris')
@@ -36,6 +38,7 @@ FULL = os.environ.get('RELAIS_FULL') == '1' or '--full' in sys.argv
 SPOT_DEBUT = os.environ.get('RELAIS_SPOT_DEBUT', '2015-01')
 JORF_JOURS = int(os.environ.get('RELAIS_JORF_JOURS', '400'))
 JORF_CONSERVE_JOURS = 730
+JORF_BUDGET_S = int(os.environ.get('RELAIS_JORF_BUDGET', '1500'))  # temps maximal par passe ; le reste est traité aux passes suivantes
 JOURS_DETAIL = 92
 H_SOLAIRE = range(11, 15)  # fenêtre « heures solaires » : 11 h à 15 h, heure de Paris
 
@@ -245,37 +248,53 @@ def jorf():
         noms = [n for n in noms if n >= seuil]
     log(f'jorf : {len(noms)} archive(s) à lire')
     lus, retenus = 0, 0
-    for nom in noms:
+    t0 = time.time()
+
+    def telecharge(nom):
         try:
-            data = get(DILA + nom)
+            return nom, get(DILA + nom)
         except Exception as e:  # noqa: BLE001
-            log('  archive illisible', nom, e)
-            break
-        try:
-            with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
-                for mb in tar:
-                    if not mb.isfile() or '/texte/version/' not in mb.name or not mb.name.endswith('.xml'):
-                        continue
-                    lus += 1
-                    try:
-                        root = ET.fromstring(tar.extractfile(mb).read())
-                    except ET.ParseError:
-                        continue
-                    titre = texte(root, './/META_TEXTE_VERSION/TITREFULL') or texte(root, './/META_TEXTE_VERSION/TITRE')
-                    tag, mots = classe(titre)
-                    if not tag:
-                        continue
-                    tid = texte(root, './/META_COMMUN/ID')
-                    if not tid:
-                        continue
-                    retenus += 1
-                    textes[tid] = {'id': tid, 'd': texte(root, './/META_TEXTE_CHRONICLE/DATE_PUBLI'), 'dt': texte(root, './/META_TEXTE_CHRONICLE/DATE_TEXTE'),
-                                   'n': texte(root, './/META_COMMUN/NATURE'), 'nor': texte(root, './/META_TEXTE_CHRONICLE/NOR'),
-                                   'jo': texte(root, './/META_TEXTE_CHRONICLE/ORIGINE_PUBLI'), 't': titre,
-                                   'm': texte(root, './/META_TEXTE_VERSION/MINISTERE'), 'tag': tag, 'mots': mots}
-        except tarfile.TarError as e:
-            log('  archive corrompue', nom, e)
-        dernier = nom
+            return nom, e
+
+    def flux_archives():
+        # téléchargements par lots de 8 (4 en parallèle), pour ne pas dépasser le budget de temps
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for k in range(0, len(noms), 8):
+                yield from pool.map(telecharge, noms[k:k + 8])
+
+    if True:
+        for nom, data in flux_archives():
+            if isinstance(data, Exception):
+                log('  archive illisible', nom, data)
+                break
+            if time.time() - t0 > JORF_BUDGET_S:
+                log(f'  budget de temps atteint, reprise à la prochaine passe après {dernier}')
+                break
+            try:
+                with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+                    for mb in tar:
+                        if not mb.isfile() or '/texte/version/' not in mb.name or not mb.name.endswith('.xml'):
+                            continue
+                        lus += 1
+                        try:
+                            root = ET.fromstring(tar.extractfile(mb).read())
+                        except ET.ParseError:
+                            continue
+                        titre = texte(root, './/META_TEXTE_VERSION/TITREFULL') or texte(root, './/META_TEXTE_VERSION/TITRE')
+                        tag, mots = classe(titre)
+                        if not tag:
+                            continue
+                        tid = texte(root, './/META_COMMUN/ID')
+                        if not tid:
+                            continue
+                        retenus += 1
+                        textes[tid] = {'id': tid, 'd': texte(root, './/META_TEXTE_CHRONICLE/DATE_PUBLI'), 'dt': texte(root, './/META_TEXTE_CHRONICLE/DATE_TEXTE'),
+                                       'n': texte(root, './/META_COMMUN/NATURE'), 'nor': texte(root, './/META_TEXTE_CHRONICLE/NOR'),
+                                       'jo': texte(root, './/META_TEXTE_CHRONICLE/ORIGINE_PUBLI'), 't': titre,
+                                       'm': texte(root, './/META_TEXTE_VERSION/MINISTERE'), 'tag': tag, 'mots': mots}
+            except tarfile.TarError as e:
+                log('  archive corrompue', nom, e)
+            dernier = nom
     seuil = (today - dt.timedelta(days=JORF_CONSERVE_JOURS)).isoformat()
     liste = sorted((t for t in textes.values() if t.get('d', '') >= seuil), key=lambda t: (t['d'], t['id']), reverse=True)
     log(f'jorf : {lus} textes lus, {retenus} retenus dans cette passe, {len(liste)} conservés')
