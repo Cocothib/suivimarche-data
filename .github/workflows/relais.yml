@@ -1,0 +1,38 @@
+name: relais
+
+on:
+  schedule:
+    - cron: '40 5 * * *'   # tous les jours à 05:40 UTC (07:40 Paris en été)
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Recalcul complet (spot depuis 2015, toutes les archives JORF)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: relais
+  cancel-in-progress: false
+
+jobs:
+  relais:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Relais spot + JORF
+        env:
+          RELAIS_FULL: ${{ inputs.full && '1' || '0' }}
+        run: python relais.py
+      - name: Publication
+        run: |
+          git config user.name 'relais-bot'
+          git config user.email 'relais-bot@users.noreply.github.com'
+          git add spot.json jorf.json etat.json
+          if git diff --cached --quiet; then echo 'Aucun changement'; else git commit -m "Relais du $(date -u +%F)" && git push; fi
