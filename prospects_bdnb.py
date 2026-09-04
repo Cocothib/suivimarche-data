@@ -7,7 +7,8 @@ Usage :  python prospects_bdnb.py                -> traite tous les zips BDNB «
          python prospects_bdnb.py 59 75          -> seulement ces départements
          python prospects_bdnb.py chemin.zip [sitadel.csv]
 Options : --telecharger        télécharge les zips manquants (data.gouv.fr / CSTB, 0,3 à 1,5 Go par département)
-          --millesime 2026-02-a millésime BDNB à télécharger (défaut : BDNB_MILLESIME)
+          --millesime 2026-02-a millésime BDNB à télécharger (défaut : BDNB_MILLESIME ; « auto » = le plus récent publié sur le serveur)
+          --detecter           affiche le millésime le plus récent disponible sur le serveur et s'arrête
           --relais bdnb.json    ajoute le résumé du département au fichier JSON du relais SuiviMarché (créé si absent)
           --sans-excel          ne produit pas prospects_<dep>.xlsx (mode relais)
           --nettoyer            supprime le zip après traitement (mode relais, disque limité)
@@ -43,6 +44,29 @@ def secteur(usage):
     for nom, mots in SECTEURS:
         if any(m in u for m in mots): return nom
     return 'autre'
+
+def existe(url):
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=30) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def detecter_millesime(base=None, dep='90', horizon=2):
+    """millésime BDNB le plus récent publié sur le serveur (dossiers bdnb_millesime_AAAA-MM-x), en sondant
+    mois par mois à partir du millésime connu jusqu'à aujourd'hui + horizon mois (petit département = requête HEAD légère)"""
+    base = BDNB_MILLESIME if not base or base == 'auto' else base
+    y, mo = int(base[:4]), int(base[5:7]); trouve = base
+    auj = datetime.date.today(); fy, fm = auj.year, auj.month + horizon
+    while fm > 12: fm -= 12; fy += 1
+    while (y, mo) <= (fy, fm):
+        for lettre in 'abc':
+            m = f'{y:04d}-{mo:02d}-{lettre}'
+            if m != base and existe(BDNB_URL.format(m=m, d=dep)): trouve = m
+            elif m != base: break
+        mo += 1
+        if mo > 12: mo = 1; y += 1
+    return trouve
 
 def telecharger(dep, dossier, millesime):
     """télécharge l'export départemental BDNB s'il est absent ; renvoie le chemin du zip"""
@@ -118,9 +142,12 @@ def main():
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument('cibles', nargs='*'); ap.add_argument('--telecharger', action='store_true'); ap.add_argument('--millesime', default=BDNB_MILLESIME)
     ap.add_argument('--relais'); ap.add_argument('--sans-excel', action='store_true'); ap.add_argument('--nettoyer', action='store_true'); ap.add_argument('--dossier')
-    ap.add_argument('-h', '--help', action='store_true')
+    ap.add_argument('-h', '--help', action='store_true'); ap.add_argument('--detecter', action='store_true')
     a = ap.parse_args()
     if a.help: print(__doc__); return
+    if a.detecter: print(detecter_millesime('auto')); return
+    if a.millesime == 'auto':
+        a.millesime = detecter_millesime('auto'); print('Millésime BDNB détecté :', a.millesime)
     dossier = a.dossier or os.path.dirname(os.path.abspath(__file__)); args = a.cibles
     sitadels = {}
     for c in glob.glob(os.path.join(dossier, '*.csv')):
