@@ -98,7 +98,59 @@ def resume_departement(dep, zpath, out, props, com, permis):
     }
     if permis is not None:
         r['permis'] = {'n': int(len(permis)), 'm2_locaux': int(permis['m2_locaux_crees'].sum()), 'm2_agri': int(permis['m2_agri'].sum()), 'm2_indus': int(permis['m2_indus_entrepot'].sum())}
+    cr = croiser_beges(dep, out, permis)
+    if cr is not None: r['croisement'] = cr
     return r
+
+# ---------------- croisement avec les bilans GES de l'ADEME (gros consommateurs) ----------------
+BEGES_API = 'https://data.ademe.fr/data-fair/api/v1/datasets/bilan-ges/lines'
+_BEGES = None
+
+def charger_beges():
+    """tous les bilans GES (national, ~10 000 lignes, 2 pages) : SIREN principal → dernier bilan ; SIREN consolidés → SIREN principal"""
+    global _BEGES
+    if _BEGES is not None: return _BEGES
+    url = BEGES_API + '?size=10000&select=siren_principal,raison_sociale,annee_de_reporting,emissions_publication_p21,siren_des_entites_consolidees,code_departement'
+    principal, filiales = {}, {}
+    while url:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: j = json.load(r)
+        for x in j.get('results', []):
+            sp = str(x.get('siren_principal') or '').zfill(9); t = x.get('emissions_publication_p21') or 0
+            if sp == '000000000' or not t: continue
+            an = int(x.get('annee_de_reporting') or 0); cur = principal.get(sp)
+            if cur and cur['annee'] >= an: continue
+            principal[sp] = {'siren': sp, 'nom': str(x.get('raison_sociale') or '')[:60], 'annee': an, 't': float(t), 'dep': str(x.get('code_departement') or '')}
+            for f in re.findall(r'\d{9}', str(x.get('siren_des_entites_consolidees') or '')): filiales.setdefault(f, sp)
+        url = j.get('next') if len(j.get('results', [])) == 10000 else None
+    _BEGES = (principal, filiales); print(f'  bilans GES ADEME : {len(principal):,} structures, {len(filiales):,} SIREN consolidés')
+    return _BEGES
+
+def croiser_beges(dep, out, permis):
+    """structures ayant déposé un bilan GES (siège n'importe où) qui possèdent des grandes toitures ou ont un permis récent dans le département"""
+    try: principal, filiales = charger_beges()
+    except Exception as e: print('  (bilans GES non interrogés :', e, ')'); return None
+    cible = lambda s: principal.get(s) and s or filiales.get(s)                              # SIREN propriétaire → SIREN principal du bilan
+    agg = {}
+    def entree(sp):
+        if sp not in agg: b = principal[sp]; agg[sp] = {'siren': sp, 'nom': b['nom'], 'dep': b['dep'], 'annee': b['annee'], 't': int(b['t']), 'n': 0, 'kwc': 0, 'score': 0, 'com': {}, 'permis': 0, 'permis_m2': 0, 'via': set()}
+        return agg[sp]
+    own = out[out['siren'].fillna('') != '']
+    for s_, g in own.groupby('siren'):
+        sp = cible(str(s_))
+        if not sp: continue
+        e = entree(sp); e['n'] += int(len(g)); e['kwc'] += int(g['kwc_potentiel'].sum()); e['score'] = max(e['score'], int(g['score'].max())); e['via'].add(str(s_))
+        for c, k in g['commune'].value_counts().head(3).items(): e['com'][c] = e['com'].get(c, 0) + int(k)
+    # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
+    pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
+    if permis is not None: pl += [(str(a), float(b or 0)) for a, b in zip(permis['siren'].fillna(''), permis['m2_locaux_crees'].fillna(0)) if a]
+    for s_, m2 in pl:
+        sp = cible(s_)
+        if not sp: continue
+        e = entree(sp); e['permis'] += 1; e['permis_m2'] += int(m2); e['via'].add(s_)
+    rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
+    for e in rows: e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]
+    print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
+    return rows
 
 def ecrire_relais(path, dep, r):
     data = {}
@@ -277,7 +329,7 @@ def traiter(zpath, sit_path, relais=None, excel=True):
 
     cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
             'kwc_potentiel', 'production_mwh', 'conso_pro_mwh', 'annee_conso', 'nb_pdl_pro', 'couverture_conso_pct', 'pdl_hta', 'contrainte', 'dist_monument_m',
-            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_m2_locaux', 'code_commune_insee', 'batiment_groupe_id']
+            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'code_commune_insee', 'batiment_groupe_id']
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
 
     # propriétaires multi-sites (comptes clés)
