@@ -94,7 +94,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
         'conso_pro_mwh': int(out['conso_pro_mwh'].fillna(0).sum()),
         'secteurs': par_secteur, 'kwc_secteurs': kwc_secteur,
         'communes': [{'insee': str(c['code_commune_insee']), 'nom': str(c['libelle_commune_insee']), 'n': int(c['prospects']), 'kwc': int(c['kwc_potentiel'])} for _, c in com.head(5).iterrows()],
-        'proprietaires': [{'siren': str(p['siren']), 'nom': str(p['proprietaire'])[:60], 'n': int(p['batiments']), 'kwc': int(p['kwc_potentiel'])} for _, p in props.head(5).iterrows()],
+        'proprietaires': [{'siren': str(p['siren']), 'nom': str(p['proprietaire'])[:60], 'n': int(p['batiments']), 'kwc': int(p['kwc_potentiel']), 'sect': str(p['secteur']), 'com': str(p['commune_principale'])[:40], 'score': int(p['meilleur_score']), 'fj': ('' if pd.isna(p['forme_juridique']) else str(p['forme_juridique']))[:40]} for _, p in props.head(20).iterrows()],
     }
     if permis is not None:
         r['permis'] = {'n': int(len(permis)), 'm2_locaux': int(permis['m2_locaux_crees'].sum()), 'm2_agri': int(permis['m2_agri'].sum()), 'm2_indus': int(permis['m2_indus_entrepot'].sum())}
@@ -281,9 +281,12 @@ def traiter(zpath, sit_path, relais=None, excel=True):
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
 
     # propriétaires multi-sites (comptes clés)
+    cand['secteur'] = cand['usage'].map(secteur)
+    mode1 = lambda s: (s.dropna().mode().iat[0] if s.notna().any() else '')                      # valeur la plus fréquente
     props = cand[cand['siren'].fillna('') != ''].groupby('siren', dropna=False).agg(proprietaire=('proprietaire', 'first'), forme_juridique=('forme_juridique', 'first'), adresse_proprietaire=('adresse_proprietaire', 'first'),
         batiments=('batiment_groupe_id', 'count'), emprise_m2=('emprise_m2', 'sum'), kwc_potentiel=('kwc_potentiel', 'sum'), production_mwh=('production_mwh', 'sum'),
-        conso_pro_mwh=('conso_pro_mwh', 'sum'), meilleur_score=('score', 'max'), communes=('libelle_commune_insee', lambda s: ', '.join(sorted(set(s.dropna()))[:6]))).reset_index()
+        conso_pro_mwh=('conso_pro_mwh', 'sum'), meilleur_score=('score', 'max'), secteur=('secteur', mode1), commune_principale=('libelle_commune_insee', mode1),
+        communes=('libelle_commune_insee', lambda s: ', '.join(sorted(set(s.dropna()))[:6]))).reset_index()
     props['lien_annuaire'] = 'https://annuaire-entreprises.data.gouv.fr/entreprise/' + props['siren']
     props = props.sort_values(['kwc_potentiel'], ascending=False)
 
