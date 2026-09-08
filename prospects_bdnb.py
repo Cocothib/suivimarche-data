@@ -237,29 +237,32 @@ def parkings_osm(dep):
             if x0 <= lon <= x1 and y0 <= lat <= y1 and any(_dans((lon, lat), rg) for rg in rings): com = nom; break
         rows.append({'id': int(el['id']), 'nom': (t.get('name') or t.get('operator') or t.get('brand') or '')[:60], 'com': com, 'm2': int(a), 'lat': round(lat, 5), 'lon': round(lon, 5), 'acces': t.get('access', ''), 'places': t.get('capacity', ''), 'cle': sorted(_cle_parking(t))})
     rows.sort(key=lambda r: -r['m2'])
+    geo = set()                                                     # noms de communes du département : jamais des clés d'enseigne (« Calais », « Nantes »…)
+    for _, nom, _, _ in coms: geo |= {m for m in re.split(r'[^a-z0-9]+', __import__('unicodedata').normalize('NFKD', nom).encode('ascii', 'ignore').decode().lower()) if len(m) >= 4}
+    for r in rows: r['cle'] = [m for m in r['cle'] if m not in geo]
     n10 = sum(1 for r in rows if r['m2'] >= 10000)
     top = [r for r in rows if r['nom']][:30] + [r for r in rows if not r['nom'] and r['m2'] >= 10000][:20]
     print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés)')
     return {'n1500': len(rows), 'n10000': n10, 'm2': int(sum(r['m2'] for r in rows)), 'm2_10000': int(sum(r['m2'] for r in rows if r['m2'] >= 10000)), 'nommes': sum(1 for r in rows if r['nom']), 'top': top,
-            'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']]}   # 'tous' sert au rapprochement puis est retiré
+            'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo}   # 'tous' et 'geo' servent au rapprochement puis sont retirés
 
 def rapprocher_parkings(cibles, parkings, props):
     """rattache les parkings nommés aux cibles (mots significatifs du nom OSM présents dans la raison sociale ou le nom du propriétaire BDNB)"""
     if not parkings: return
-    noms = {}
-    for e in cibles: noms[e['siren']] = _mots(e['nom'])
+    noms = {}; geo = parkings.get('geo', set())
+    for e in cibles: noms[e['siren']] = _mots(e['nom']) - geo
     for _, p in props.iterrows():
         sp = None
         for e in cibles:
             if str(p['siren']) in (e.get('via') or []): sp = e['siren']; break
-        if sp: noms[sp] |= _mots(p['proprietaire'])
+        if sp: noms[sp] |= (_mots(p['proprietaire']) - geo)
     for e in cibles:
         m = noms.get(e['siren'], set()); n = 0; m2 = 0; ex = ''
         if m:
             for nom, com, a, cle in parkings['tous']:
                 if cle & m: n += 1; m2 += a; ex = ex or f'{nom} ({com}, {a:,} m²)'.replace(',', ' ')
         e['parkings'] = n; e['parkings_m2'] = m2; e['parking_ex'] = ex[:80]
-    del parkings['tous']
+    del parkings['tous']; parkings.pop('geo', None)
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
