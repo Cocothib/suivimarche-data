@@ -22,7 +22,7 @@ le workflow « bdnb » de GitHub Actions) : modifier les deux ensemble.
 Hypothèses (modifiables ci-dessous) : part de toiture exploitable, rendement surfacique, productible,
 seuils d'emprise au sol et de score. Aucune donnée n'est envoyée sur internet.
 """
-import sys, os, re, io, glob, zipfile, datetime, json, argparse, urllib.request, shutil
+import sys, os, re, io, glob, zipfile, datetime, json, argparse, urllib.request, urllib.parse, shutil
 import pandas as pd
 try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 except Exception: pass
@@ -99,7 +99,12 @@ def resume_departement(dep, zpath, out, props, com, permis):
     if permis is not None:
         r['permis'] = {'n': int(len(permis)), 'm2_locaux': int(permis['m2_locaux_crees'].sum()), 'm2_agri': int(permis['m2_agri'].sum()), 'm2_indus': int(permis['m2_indus_entrepot'].sum())}
     cr = croiser_beges(dep, out, permis)
-    if cr is not None: r['croisement'] = cr
+    try: pk = parkings_osm(dep)
+    except Exception as e: print('  (parkings OSM non exploités :', e, ')'); pk = None
+    if cr is not None:
+        if pk: rapprocher_parkings(cr, pk, props)
+        r['croisement'] = cr
+    if pk: r['parkings'] = pk
     return r
 
 # ---------------- croisement avec les bilans GES de l'ADEME (gros consommateurs) ----------------
@@ -110,7 +115,7 @@ def charger_beges():
     """tous les bilans GES (national, ~10 000 lignes, 2 pages) : SIREN principal → dernier bilan ; SIREN consolidés → SIREN principal"""
     global _BEGES
     if _BEGES is not None: return _BEGES
-    url = BEGES_API + '?size=10000&select=siren_principal,raison_sociale,annee_de_reporting,emissions_publication_p21,siren_des_entites_consolidees,code_departement'
+    url = BEGES_API + '?size=10000&select=siren_principal,raison_sociale,annee_de_reporting,emissions_publication_p21,siren_des_entites_consolidees,code_departement,apenaf_associe'
     principal, filiales = {}, {}
     while url:
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: j = json.load(r)
@@ -119,7 +124,7 @@ def charger_beges():
             if sp == '000000000' or not t: continue
             an = int(x.get('annee_de_reporting') or 0); cur = principal.get(sp)
             if cur and cur['annee'] >= an: continue
-            principal[sp] = {'siren': sp, 'nom': str(x.get('raison_sociale') or '')[:60], 'annee': an, 't': float(t), 'dep': str(x.get('code_departement') or '')}
+            principal[sp] = {'siren': sp, 'nom': str(x.get('raison_sociale') or '')[:60], 'annee': an, 't': float(t), 'dep': str(x.get('code_departement') or ''), 'naf': str(x.get('apenaf_associe') or '').replace('.', '')}
             for f in re.findall(r'\d{9}', str(x.get('siren_des_entites_consolidees') or '')): filiales.setdefault(f, sp)
         url = j.get('next') if len(j.get('results', [])) == 10000 else None
     _BEGES = (principal, filiales); print(f'  bilans GES ADEME : {len(principal):,} structures, {len(filiales):,} SIREN consolidés')
@@ -132,7 +137,8 @@ def croiser_beges(dep, out, permis):
     cible = lambda s: principal.get(s) and s or filiales.get(s)                              # SIREN propriétaire → SIREN principal du bilan
     agg = {}
     def entree(sp):
-        if sp not in agg: b = principal[sp]; agg[sp] = {'siren': sp, 'nom': b['nom'], 'dep': b['dep'], 'annee': b['annee'], 't': int(b['t']), 'n': 0, 'kwc': 0, 'score': 0, 'com': {}, 'permis': 0, 'permis_m2': 0, 'via': set()}
+        if sp not in agg: b = principal[sp]; agg[sp] = {'siren': sp, 'nom': b['nom'], 'dep': b['dep'], 'annee': b['annee'], 't': int(b['t']), 'naf': b.get('naf', ''), 'n': 0, 'kwc': 0, 'score': 0, 'com': {}, 'permis': 0, 'permis_m2': 0, 'via': set(),
+                                                        'conso': 0, 'prod': 0, 'hta': 0, 'agri': 0, 'emprise': 0, 'sol': 0, 'parcelles': set()}
         return agg[sp]
     own = out[out['siren'].fillna('') != '']
     for s_, g in own.groupby('siren'):
@@ -140,6 +146,11 @@ def croiser_beges(dep, out, permis):
         if not sp: continue
         e = entree(sp); e['n'] += int(len(g)); e['kwc'] += int(g['kwc_potentiel'].sum()); e['score'] = max(e['score'], int(g['score'].max())); e['via'].add(str(s_))
         for c, k in g['commune'].value_counts().head(3).items(): e['com'][c] = e['com'].get(c, 0) + int(k)
+        # besoins : consommation Enedis des bâtiments (MWh/an), production possible, raccordements HTA, part agricole, foncier libre sur les parcelles
+        e['conso'] += int(num(g['conso_pro_mwh']).fillna(0).sum()); e['prod'] += int(num(g['production_mwh']).fillna(0).sum())
+        e['hta'] += int((num(g['pdl_hta']).fillna(0) > 0).sum()); e['agri'] += int((g['usage'].map(secteur) == 'agricole').sum()); e['emprise'] += int(num(g['emprise_sol_m2']).fillna(0).sum())
+        for pid, pm2, em in zip(g['parcelle_id'].fillna(''), num(g['parcelle_m2']).fillna(0), num(g['emprise_sol_m2']).fillna(0)):
+            if pid and pid not in e['parcelles'] and pm2 - em >= 3000: e['parcelles'].add(pid); e['sol'] += int(pm2 - em)
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
     if permis is not None: pl += [(str(a), float(b or 0)) for a, b in zip(permis['siren'].fillna(''), permis['m2_locaux_crees'].fillna(0)) if a]
@@ -148,9 +159,108 @@ def croiser_beges(dep, out, permis):
         if not sp: continue
         e = entree(sp); e['permis'] += 1; e['permis_m2'] += int(m2); e['via'].add(s_)
     rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
-    for e in rows: e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]
+    for e in rows: e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
     print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
     return rows
+
+# ---------------- parkings extérieurs (OpenStreetMap) : obligation d'ombrières, loi APER art. 40 ----------------
+OVERPASS = ('https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter')   # kumi.systems et private.coffee répondent 504 sur les requêtes par area
+PARKING_MIN = 1500          # m² : seuil de l'obligation d'ombrières (loi APER)
+MOTS_VIDES = {'france', 'parking', 'centre', 'commercial', 'zone', 'societe', 'groupe', 'hypermarche', 'supermarche', 'magasin', 'sas', 'sarl', 'entreprise', 'entreprises', 'nord', 'paris', 'lille', 'departement', 'communaute', 'commune', 'ville', 'region', 'nationale', 'general', 'generale', 'industrie', 'industries', 'services', 'service', 'retail', 'europe', 'holding', 'immobilier', 'immobiliere', 'site', 'usine', 'agence', 'client', 'clients', 'personnel', 'visiteurs', 'salaries', 'employes', 'public', 'prive', 'gare', 'stationnement', 'aire', 'covoiturage', 'relais',
+              'grand', 'grande', 'place', 'saint', 'sainte', 'port', 'maritime', 'charles', 'gaulle', 'jean', 'pierre', 'marie', 'louis', 'avenue', 'boulevard', 'route', 'chemin', 'allee', 'espace', 'parc', 'plateau', 'halle', 'halles', 'hotel', 'mairie', 'ecole', 'college', 'lycee', 'stade', 'salle', 'sport', 'sports', 'piscine', 'cimetiere', 'eglise', 'marche', 'maison', 'complexe', 'terrain', 'terrains', 'poids', 'lourds', 'camions', 'voitures', 'velos', 'bus', 'cars', 'nouveau', 'nouvelle', 'ancien', 'ancienne', 'petit', 'petite', 'haut', 'haute', 'basse', 'vieux', 'vieille', 'metropole', 'europeenne', 'urbaine', 'agglomeration', 'hauts', 'flandre', 'flandres', 'artois', 'picardie', 'normandie', 'bretagne', 'loire', 'atlantique', 'pays', 'social', 'sociale', 'habitat', 'logement', 'office', 'universite', 'hopital', 'hospitalier', 'clinique', 'polyclinique', 'medical', 'sante', 'transports', 'transport', 'logistique', 'distribution', 'developpement', 'gestion', 'exploitation', 'production', 'energie', 'energies', 'electricite', 'solaire', 'company', 'international', 'invest', 'investissement', 'participations', 'financiere', 'capital', 'partners', 'group', 'formation', 'faculte', 'medecine', 'pole', 'professionnelle', 'nationale', 'agence', 'adultes', 'institut', 'ecoles', 'campus', 'technique', 'technologie', 'technopole', 'atelier', 'ateliers', 'depot', 'entrepot', 'plateforme'}
+def _cle_parking(t):
+    """mots-clés d'un parking : nom d'enseigne/exploitant (brand, operator) en entier, sinon seulement le premier mot significatif du nom"""
+    m = _mots(t.get('brand', '')) | _mots(t.get('operator', ''))
+    if not m:
+        for w in re.split(r'[^a-z0-9]+', __import__('unicodedata').normalize('NFKD', str(t.get('name') or '')).encode('ascii', 'ignore').decode().lower()):
+            if len(w) >= 4 and w not in MOTS_VIDES and not w.isdigit(): m = {w}; break
+    return m
+
+def _mots(t):
+    import unicodedata
+    t = unicodedata.normalize('NFKD', str(t or '')).encode('ascii', 'ignore').decode().lower()
+    return {m for m in re.split(r'[^a-z0-9]+', t) if len(m) >= 4 and m not in MOTS_VIDES and not m.isdigit()}
+
+def _aire_m2(g):
+    import math
+    if len(g) < 3: return 0.0
+    lat0 = math.radians(sum(p['lat'] for p in g) / len(g)); k = 111320.0
+    pts = [(p['lon'] * k * math.cos(lat0), p['lat'] * k) for p in g]
+    return abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1] - pts[(i + 1) % len(pts)][0] * pts[i][1] for i in range(len(pts)))) / 2
+
+def _dans(pt, ring):
+    x, y = pt; n = len(ring); inside = False; j = n - 1
+    for i in range(n):
+        xi, yi = ring[i]; xj, yj = ring[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi: inside = not inside
+        j = i
+    return inside
+
+def communes_contours(dep):
+    """contours des communes du département (geo.api.gouv.fr) -> liste (insee, nom, bbox, anneaux)"""
+    url = f'https://geo.api.gouv.fr/departements/{dep}/communes?format=geojson&geometry=contour'
+    with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: gj = json.load(r)
+    out = []
+    for f in gj.get('features', []):
+        geom = f.get('geometry') or {}; polys = [geom['coordinates']] if geom.get('type') == 'Polygon' else geom.get('coordinates', [])
+        rings = [[(x, y) for x, y in poly[0]] for poly in polys if poly]
+        if not rings: continue
+        xs = [x for rg in rings for x, _ in rg]; ys = [y for rg in rings for _, y in rg]
+        out.append((f['properties'].get('code', ''), f['properties'].get('nom', ''), (min(xs), min(ys), max(xs), max(ys)), rings))
+    return out
+
+def parkings_osm(dep):
+    """parkings extérieurs de plus de PARKING_MIN m² (OSM, périmètre > 160 m) avec commune, nom/exploitant, surface"""
+    q = f'[out:json][timeout:280];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;way["amenity"="parking"]["parking"!~"underground|multi-storey|rooftop"](area.a)(if:length()>160);out geom;'
+    data = None
+    import time
+    for essai in range(3):
+        for base in OVERPASS:
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=300) as r: data = json.load(r)
+                break
+            except Exception as e: print('  (Overpass', base.split('/')[2], ':', e, ')')
+        if data is not None: break
+        time.sleep(30)
+    if data is None: return None
+    try: coms = communes_contours(dep)
+    except Exception as e: print('  (contours des communes indisponibles :', e, ')'); coms = []
+    rows = []
+    for el in data.get('elements', []):
+        g = el.get('geometry') or []
+        if el.get('type') != 'way' or len(g) < 4: continue
+        a = _aire_m2(g)
+        if a < PARKING_MIN: continue
+        t = el.get('tags') or {}; lon = sum(p['lon'] for p in g) / len(g); lat = sum(p['lat'] for p in g) / len(g)
+        com = ''
+        for insee, nom, (x0, y0, x1, y1), rings in coms:
+            if x0 <= lon <= x1 and y0 <= lat <= y1 and any(_dans((lon, lat), rg) for rg in rings): com = nom; break
+        rows.append({'id': int(el['id']), 'nom': (t.get('name') or t.get('operator') or t.get('brand') or '')[:60], 'com': com, 'm2': int(a), 'lat': round(lat, 5), 'lon': round(lon, 5), 'acces': t.get('access', ''), 'places': t.get('capacity', ''), 'cle': sorted(_cle_parking(t))})
+    rows.sort(key=lambda r: -r['m2'])
+    n10 = sum(1 for r in rows if r['m2'] >= 10000)
+    top = [r for r in rows if r['nom']][:30] + [r for r in rows if not r['nom'] and r['m2'] >= 10000][:20]
+    print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés)')
+    return {'n1500': len(rows), 'n10000': n10, 'm2': int(sum(r['m2'] for r in rows)), 'm2_10000': int(sum(r['m2'] for r in rows if r['m2'] >= 10000)), 'nommes': sum(1 for r in rows if r['nom']), 'top': top,
+            'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']]}   # 'tous' sert au rapprochement puis est retiré
+
+def rapprocher_parkings(cibles, parkings, props):
+    """rattache les parkings nommés aux cibles (mots significatifs du nom OSM présents dans la raison sociale ou le nom du propriétaire BDNB)"""
+    if not parkings: return
+    noms = {}
+    for e in cibles: noms[e['siren']] = _mots(e['nom'])
+    for _, p in props.iterrows():
+        sp = None
+        for e in cibles:
+            if str(p['siren']) in (e.get('via') or []): sp = e['siren']; break
+        if sp: noms[sp] |= _mots(p['proprietaire'])
+    for e in cibles:
+        m = noms.get(e['siren'], set()); n = 0; m2 = 0; ex = ''
+        if m:
+            for nom, com, a, cle in parkings['tous']:
+                if cle & m: n += 1; m2 += a; ex = ex or f'{nom} ({com}, {a:,} m²)'.replace(',', ' ')
+        e['parkings'] = n; e['parkings_m2'] = m2; e['parking_ex'] = ex[:80]
+    del parkings['tous']
+    for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
     data = {}
@@ -293,8 +403,17 @@ def traiter(zpath, sit_path, relais=None, excel=True):
     except Exception as e:
         print('  (permis BDNB non exploités :', e, ')'); sit = pd.DataFrame(columns=['batiment_groupe_id'])
 
+    # 8. parcelle principale de chaque bâtiment : foncier libre autour (PV au sol, ombrières)
+    try:
+        rbp2 = lire(z, 'rel_batiment_groupe_parcelle.csv', usecols=['batiment_groupe_id', 'parcelle_id', 'parcelle_principale'])
+        rbp2 = rbp2[rbp2['parcelle_principale'].astype(str) == '1'][['batiment_groupe_id', 'parcelle_id']]
+        par = lire(z, 'parcelle.csv', usecols=['parcelle_id', 's_geom_parcelle']); par['parcelle_m2'] = num(par['s_geom_parcelle'])
+        parc = rbp2.merge(par[['parcelle_id', 'parcelle_m2']], on='parcelle_id').sort_values('parcelle_m2', ascending=False).groupby('batiment_groupe_id').head(1)[['batiment_groupe_id', 'parcelle_id', 'parcelle_m2']]
+    except Exception as e:
+        print('  (parcelles non exploitées :', e, ')'); parc = pd.DataFrame(columns=['batiment_groupe_id', 'parcelle_id', 'parcelle_m2'])
+
     # ---------------- assemblage ----------------
-    df = bg.merge(syn, on='batiment_groupe_id', how='left').merge(ffo, on='batiment_groupe_id', how='left').merge(topo, on='batiment_groupe_id', how='left') \
+    df = bg.merge(syn, on='batiment_groupe_id', how='left').merge(parc, on='batiment_groupe_id', how='left').merge(ffo, on='batiment_groupe_id', how='left').merge(topo, on='batiment_groupe_id', how='left') \
         .merge(dle, on='batiment_groupe_id', how='left').merge(adr, on='batiment_groupe_id', how='left').merge(rel, on='batiment_groupe_id', how='left') \
         .merge(urb, on='batiment_groupe_id', how='left').merge(hthd, on='batiment_groupe_id', how='left').merge(sit, on='batiment_groupe_id', how='left')
     usage = (df['usage_principal_bdnb_open'].fillna('') + ' | ' + df['usage_niveau_1_txt'].fillna('') + ' | ' + df['usage_bdtopo'].fillna('')).str.lower()
@@ -329,7 +448,7 @@ def traiter(zpath, sit_path, relais=None, excel=True):
 
     cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
             'kwc_potentiel', 'production_mwh', 'conso_pro_mwh', 'annee_conso', 'nb_pdl_pro', 'couverture_conso_pct', 'pdl_hta', 'contrainte', 'dist_monument_m',
-            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'code_commune_insee', 'batiment_groupe_id']
+            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'parcelle_id', 'parcelle_m2', 'code_commune_insee', 'batiment_groupe_id']
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
 
     # propriétaires multi-sites (comptes clés)
