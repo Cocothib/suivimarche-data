@@ -39,7 +39,7 @@ SPOT_DEBUT = os.environ.get('RELAIS_SPOT_DEBUT', '2015-01')
 JORF_JOURS = int(os.environ.get('RELAIS_JORF_JOURS', '400'))
 JORF_CONSERVE_JOURS = 730
 JORF_BUDGET_S = int(os.environ.get('RELAIS_JORF_BUDGET', '1500'))  # temps maximal par passe ; le reste est traité aux passes suivantes
-JOURS_DETAIL = 92
+JOURS_DETAIL = 366   # série journalière conservée : douze mois (arbitrage batterie dans SuiviMarché)
 H_SOLAIRE = range(11, 15)  # fenêtre « heures solaires » : 11 h à 15 h, heure de Paris
 
 try:
@@ -110,7 +110,7 @@ def spot():
         return
     # période de chargement : du premier mois à calculer jusqu'à aujourd'hui, découpée par année
     d0 = dt.date(int(a_faire[0][:4]), int(a_faire[0][5:]), 1)
-    # les 92 derniers jours sont toujours rechargés pour la série journalière
+    # les 366 derniers jours sont toujours rechargés pour la série journalière
     d_detail = today - dt.timedelta(days=JOURS_DETAIL)
     d0 = min(d0, d_detail)
     log(f'spot : {len(a_faire)} mois à calculer, chargement depuis {d0}')
