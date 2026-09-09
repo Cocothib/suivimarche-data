@@ -101,12 +101,150 @@ def resume_departement(dep, zpath, out, props, com, permis):
     cr = croiser_beges(dep, out, permis)
     try: pk = parkings_osm(dep)
     except Exception as e: print('  (parkings OSM non exploités :', e, ')'); pk = None
+    # solaire existant (OSM) et installations classées (Géorisques), rattachés aux bâtiments des cibles (≤ 60 m) et aux SIREN
+    try: so = solaire_osm(dep)
+    except Exception as e: print('  (solaire OSM non exploité :', e, ')'); so = None
+    try: ic = icpe_departement(dep)
+    except Exception as e: print('  (ICPE non exploitées :', e, ')'); ic = None
+    bd = bdappv_par_commune(dep, os.environ.get('BDNB_DOSSIER') or os.path.dirname(os.path.abspath(zpath)))
     if cr is not None:
         if pk: rapprocher_parkings(cr, pk, props)
+        pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
+        if so:
+            gs = _grille(so); noms_c = {e['siren']: (_mots(e['nom']) | set().union(*[_mots(p) for p in []])) for e in cr}
+            for e in cr:
+                trouves = {}
+                for b in e.get('bat_ids', []):
+                    if b in pos:
+                        for d_, i in _proches(gs, so, pos[b][0], pos[b][1], 60): trouves[i] = min(trouves.get(i, 1e9), d_)
+                cle = _mots(e['nom'])
+                for i, x in enumerate(so):
+                    if cle and set(x['cle']) & cle and i not in trouves: trouves[i] = -1   # rattachement par exploitant
+                lst = [dict(so[i], d=int(d_) if d_ >= 0 else None) for i, d_ in sorted(trouves.items(), key=lambda kv: kv[1])][:8]
+                if lst: e['pv'] = {'n': len(lst), 'kw': int(sum(x['kw'] or 0 for x in lst)), 'sites': [{'id': x['id'], 'nom': x['nom'] or x['op'], 'kw': x['kw'], 'lieu': x['lieu'], 'd': x['d'], 'lat': x['lat'], 'lon': x['lon']} for x in lst]}
+        if ic:
+            gi = _grille(ic)
+            for e in cr:
+                sirens = set([e['siren']] + list(e.get('via') or [])); lst = [x for x in ic if x['siret'][:9] in sirens]
+                vus = set(x['aiot'] for x in lst)
+                for b in e.get('bat_ids', []):
+                    if b in pos:
+                        for d_, i in _proches(gi, ic, pos[b][0], pos[b][1], 80):
+                            if ic[i]['aiot'] not in vus: lst.append(dict(ic[i], d=int(d_))); vus.add(ic[i]['aiot'])
+                if lst: e['icpe'] = resume_icpe(lst)
+        for e in cr: e.pop('bat_ids', None)
         r['croisement'] = cr
     if pk:
         r['_parkings_complet'] = pk.pop('complet', None); r['parkings'] = pk
+    if so is not None or bd:
+        r['_solaire_complet'] = {'osm': [{k: v for k, v in x.items() if k != 'cle' and v not in (None, '')} for x in (so or [])], 'bdappv': bd}
+        r['solaire'] = {'osm_n': len(so or []), 'osm_kw': int(sum(x['kw'] or 0 for x in (so or []))), 'osm_sol': sum(1 for x in (so or []) if x['lieu'] == 'sol'), 'bdappv_n': (bd or {}).get('n', 0), 'bdappv_kwc': (bd or {}).get('kwc', 0)}
+    if ic is not None:
+        r['_icpe_complet'] = [{k: v for k, v in x.items() if v not in (None, '', [], False)} for x in ic]
+        r['icpe'] = {'n': len(ic), 'seveso': sum(1 for x in ic if x['seveso'] and not x['seveso'].lower().startswith('non')), 'combustion': sum(1 for x in ic if any(y['n'].startswith('2910') or y['n'].startswith('3110') for y in x['rub'])), 'froid': sum(1 for x in ic if any(y['n'][:4] in ('4735', '1185', '4802', '2921') for y in x['rub'])), 'elevage': sum(1 for x in ic if x['elevage']), 'carriere': sum(1 for x in ic if x['carriere'])}
     return r
+
+# ---------------- projection Lambert-93 (EPSG:2154) → WGS84 ----------------
+def lambert93_vers_wgs84(x, y):
+    import math
+    n, c, xs, ys, e = 0.7256077650532670, 11754255.426096, 700000.0, 12655612.049876, 0.0818191910428158
+    r = math.hypot(x - xs, ys - y); gamma = math.atan2(x - xs, ys - y)
+    lon = math.radians(3) + gamma / n; latiso = -math.log(r / c) / n
+    phi = 2 * math.atan(math.exp(latiso)) - math.pi / 2
+    for _ in range(6): phi = 2 * math.atan(((1 + e * math.sin(phi)) / (1 - e * math.sin(phi))) ** (e / 2) * math.exp(latiso)) - math.pi / 2
+    return (math.degrees(phi), math.degrees(lon))
+
+def _grille(rows, cle_lat='lat', cle_lon='lon', pas=0.004):
+    """index spatial simple : cellule (lat, lon) → liste d'indices"""
+    g = {}
+    for i, r in enumerate(rows):
+        la, lo = r.get(cle_lat), r.get(cle_lon)
+        if la is None or lo is None or la != la or lo != lo: continue
+        g.setdefault((int(la / pas), int(lo / pas)), []).append(i)
+    return g
+
+def _proches(g, rows, lat, lon, dmax_m, pas=0.004, cle_lat='lat', cle_lon='lon'):
+    import math
+    out = []; ci, cj = int(lat / pas), int(lon / pas); k = math.cos(math.radians(lat)) * 111320
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            for i in g.get((ci + di, cj + dj), []):
+                r = rows[i]; d = math.hypot((r[cle_lon] - lon) * k, (r[cle_lat] - lat) * 111320)
+                if d <= dmax_m: out.append((d, i))
+    return sorted(out)
+
+def _kw(txt):
+    """'7.19 kWc' / '60.5 MW' / '36 kW' / '2 MWp' → kW"""
+    m = re.search(r'([\d.,]+)\s*([kMG]?)W', str(txt or ''), re.I)
+    if not m: return None
+    v = float(m.group(1).replace(',', '.')); u = m.group(2).upper()
+    return round(v * (1000 if u == 'M' else 1e6 if u == 'G' else 1), 1)
+
+# ---------------- solaire existant : OpenStreetMap (générateurs et centrales solaires) et BDAPPV (installations déclarées, par commune) ----------------
+def solaire_osm(dep):
+    import time
+    q = f'[out:json][timeout:240];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;(nwr["generator:source"="solar"](area.a);nwr["plant:source"="solar"](area.a););out tags center;'
+    data = None
+    for essai in range(3):
+        for base in OVERPASS:
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=300) as r: data = json.load(r)
+                break
+            except Exception as e: print('  (Overpass solaire', base.split('/')[2], ':', e, ')')
+        if data is not None: break
+        time.sleep(30)
+    if data is None: return None
+    rows = []
+    for el in data.get('elements', []):
+        t = el.get('tags') or {}; c = el.get('center') or {'lat': el.get('lat'), 'lon': el.get('lon')}
+        if c.get('lat') is None: continue
+        kw = _kw(t.get('generator:output:electricity') or t.get('plant:output:electricity'))
+        rows.append({'id': f"{el.get('type', 'w')[0]}{el.get('id')}", 'nom': (t.get('name') or '')[:60], 'op': (t.get('operator') or t.get('owner') or '')[:60], 'kw': kw, 'lieu': 'sol' if t.get('power') == 'plant' or t.get('location') in ('ground', 'surface') or t.get('generator:place') == 'surface' else 'toiture' if t.get('location') == 'roof' or t.get('building') else '', 'lat': round(c['lat'], 5), 'lon': round(c['lon'], 5), 'debut': (t.get('start_date') or '')[:10], 'cle': sorted(_mots(t.get('operator', '')) | _mots(t.get('owner', '')) | _mots(t.get('name', '')))})
+    print(f'  Solaire OSM : {len(rows):,} installations ({sum(1 for r in rows if r["kw"])} avec puissance, {sum(1 for r in rows if r["op"])} avec exploitant)')
+    return rows
+
+BDAPPV_URL = 'https://zenodo.org/api/records/7358126/files/data.zip/content'
+def bdappv_par_commune(dep, dossier):
+    """BDAPPV (Kasmi et al., Zenodo 7358126) : installations PV déclarées par leurs propriétaires (BDPV), sans coordonnées → comptage par commune"""
+    try:
+        zp = os.path.join(dossier or '.', 'bdappv_data.zip')
+        if not os.path.exists(zp): urllib.request.urlretrieve(BDAPPV_URL, zp)
+        with zipfile.ZipFile(zp) as zz:
+            with zz.open('data/raw/raw-metadata.csv') as f: m = pd.read_csv(f, usecols=['departement', 'city', 'kWp', 'surface', 'dateInstalled', 'selfConsumption'])
+        m = m[m['departement'].astype(str).str.zfill(2) == dep]
+        if not len(m): return {'n': 0, 'kwc': 0, 'communes': {}}
+        m['kWp'] = pd.to_numeric(m['kWp'], errors='coerce'); m['city'] = m['city'].fillna('').astype(str).str.strip()
+        par = m.groupby('city').agg(n=('kWp', 'size'), kwc=('kWp', 'sum')).sort_values('n', ascending=False)
+        return {'n': int(len(m)), 'kwc': int(m['kWp'].fillna(0).sum() / 1000), 'mediane_kwc': round(float(m['kWp'].median() / 1000), 1) if m['kWp'].notna().any() else None, 'communes': {c: {'n': int(r['n']), 'kwc': int(r['kwc'] / 1000)} for c, r in par.head(300).iterrows()}}
+    except Exception as e:
+        print('  (BDAPPV non exploité :', e, ')'); return None
+
+# ---------------- installations classées (Géorisques) ----------------
+def icpe_departement(dep):
+    rows = []; page = 1
+    while page <= 30:
+        url = f'https://georisques.gouv.fr/api/v1/installations_classees?departement={dep}&page_size=1000&page={page}'
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: j = json.load(r)
+        for x in j.get('data', []):
+            if (x.get('regime') or '') == 'Non ICPE': continue
+            rub = [{'n': str(y.get('numeroRubrique') or ''), 'nature': str(y.get('nature') or '')[:80], 'q': y.get('quantiteTotale'), 'u': y.get('unite') or ''} for y in (x.get('rubriques') or [])[:8]]
+            rows.append({'aiot': x.get('codeAIOT'), 'nom': str(x.get('raisonSociale') or '')[:60], 'siret': str(x.get('siret') or ''), 'naf': x.get('codeNaf') or '', 'insee': x.get('codeInsee') or '', 'com': x.get('commune') or '', 'lat': x.get('latitude'), 'lon': x.get('longitude'), 'regime': x.get('regime') or '', 'etat': x.get('etatActivite') or '', 'seveso': x.get('statutSeveso') or '', 'ied': bool(x.get('ied')), 'industrie': bool(x.get('industrie')), 'elevage': bool(x.get('bovins') or x.get('porcs') or x.get('volailles')), 'carriere': bool(x.get('carriere')), 'rub': rub})
+        if page >= int(j.get('total_pages') or 1): break
+        page += 1
+    rows = [r for r in rows if not r['etat'].lower().startswith('cess')]
+    print(f'  ICPE Géorisques : {len(rows):,} installations en activité ({sum(1 for r in rows if r["siret"])} avec SIRET)')
+    return rows
+
+RUBRIQUES_ENERGIE = {'2910': 'combustion', '2921': 'refroidissement (tours)', '4735': 'ammoniac (froid)', '1185': 'fluides frigorigènes', '4802': 'gaz fluorés (froid)', '3110': 'combustion > 50 MW', '2260': 'broyage', '2515': 'concassage', '2661': 'plastiques', '2450': 'imprimerie', '2560': 'travail des métaux', '2210': 'abattoir', '2221': 'alimentaire', '2230': 'lait', '2140': 'volailles', '2101': 'bovins', '2102': 'porcs', '2111': 'volailles', '2510': 'carrière', '3610': 'papier', '2410': 'bois'}
+
+def resume_icpe(lst):
+    if not lst: return None
+    rubs = {}
+    for r in lst:
+        for y in r['rub']:
+            k = y['n'][:4]; rubs[k] = rubs.get(k, 0) + 1
+    return {'n': len(lst), 'seveso': sum(1 for r in lst if r['seveso'] and not r['seveso'].lower().startswith('non')), 'ied': sum(1 for r in lst if r['ied']), 'elevage': sum(1 for r in lst if r['elevage']), 'carriere': sum(1 for r in lst if r['carriere']), 'combustion': sum(1 for r in lst if any(y['n'].startswith('2910') or y['n'].startswith('3110') for y in r['rub'])), 'froid': sum(1 for r in lst if any(y['n'][:4] in ('4735', '1185', '4802', '2921') for y in r['rub'])),
+            'rubriques': sorted(({'n': k, 'lib': RUBRIQUES_ENERGIE.get(k, ''), 'x': v} for k, v in rubs.items()), key=lambda d: -d['x'])[:6], 'sites': [{'nom': r['nom'], 'com': r['com'], 'siret': r['siret'], 'regime': r['regime'], 'rub': ', '.join(y['n'] for y in r['rub'][:5])} for r in lst[:6]]}
 
 # ---------------- croisement avec les bilans GES de l'ADEME (gros consommateurs) ----------------
 BEGES_API = 'https://data.ademe.fr/data-fair/api/v1/datasets/bilan-ges/lines'
@@ -139,7 +277,7 @@ def croiser_beges(dep, out, permis):
     agg = {}
     def entree(sp):
         if sp not in agg: b = principal[sp]; agg[sp] = {'siren': sp, 'nom': b['nom'], 'dep': b['dep'], 'annee': b['annee'], 't': int(b['t']), 'naf': b.get('naf', ''), 'n': 0, 'kwc': 0, 'score': 0, 'com': {}, 'permis': 0, 'permis_m2': 0, 'via': set(),
-                                                        'conso': 0, 'prod': 0, 'hta': 0, 'agri': 0, 'emprise': 0, 'sol': 0, 'parcelles': set()}
+                                                        'conso': 0, 'prod': 0, 'hta': 0, 'agri': 0, 'emprise': 0, 'sol': 0, 'parcelles': set(), 'gaz': 0, 'gaz_n': 0, 'dpe': {}, 'dpe_chauf': {}, 'sites': {}, 'bat_ids': []}
         return agg[sp]
     own = out[out['siren'].fillna('') != '']
     for s_, g in own.groupby('siren'):
@@ -152,6 +290,16 @@ def croiser_beges(dep, out, permis):
         e['hta'] += int((num(g['pdl_hta']).fillna(0) > 0).sum()); e['agri'] += int((g['usage'].map(secteur) == 'agricole').sum()); e['emprise'] += int(num(g['emprise_sol_m2']).fillna(0).sum())
         for pid, pm2, em in zip(g['parcelle_id'].fillna(''), num(g['parcelle_m2']).fillna(0), num(g['emprise_sol_m2']).fillna(0)):
             if pid and pid not in e['parcelles'] and pm2 - em >= 3000: e['parcelles'].add(pid); e['sol'] += int(pm2 - em)
+        # gaz, DPE tertiaire, sites par commune, bâtiments (pour le solaire existant et les ICPE à proximité)
+        gzv = num(g['conso_gaz_mwh']).fillna(0); e['gaz'] += int(gzv.sum()); e['gaz_n'] += int((gzv > 0).sum())
+        for cl, ch in zip(g['dpe_classe'].fillna(''), g['dpe_chauffage'].fillna('')):
+            if cl: e['dpe'][cl] = e['dpe'].get(cl, 0) + 1
+            if ch: k = 'gaz' if 'gaz' in ch.lower() else 'fioul' if 'fioul' in ch.lower() else 'électricité' if 'lectri' in ch.lower() else 'réseau' if 'seau' in ch.lower() else 'bois' if 'bois' in ch.lower() else 'autre'; e['dpe_chauf'][k] = e['dpe_chauf'].get(k, 0) + 1
+        for com_, ins, kwc_, la, lo, adr in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna('')):
+            st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': ''})
+            st['n'] += 1; st['kwc'] += int(kwc_); st['adr'] = st['adr'] or adr[:60]
+            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo)
+        e['bat_ids'].extend(list(g['batiment_groupe_id']))
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
     if permis is not None: pl += [(str(a), float(b or 0)) for a, b in zip(permis['siren'].fillna(''), permis['m2_locaux_crees'].fillna(0)) if a]
@@ -160,7 +308,12 @@ def croiser_beges(dep, out, permis):
         if not sp: continue
         e = entree(sp); e['permis'] += 1; e['permis_m2'] += int(m2); e['via'].add(s_)
     rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
-    for e in rows: e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
+    for e in rows:
+        e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
+        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
+        if not e['dpe']: e.pop('dpe'); e.pop('dpe_chauf')
+    for e in agg.values():
+        if e not in rows: e.pop('bat_ids', None)
     print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
     return rows
 
@@ -268,6 +421,12 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
+    for cle, dossier, meta in (('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
+        val = r.pop(cle, None)
+        if val is not None:
+            d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'source': meta, 'donnees': val}, f, ensure_ascii=False, separators=(',', ':'))
+            print(f'  → {dossier}/{dep}.json')
     complet = r.pop('_parkings_complet', None)
     if complet is not None:   # liste complète des parkings du département, fichier séparé chargé à la demande par SuiviMarché
         d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
@@ -433,6 +592,22 @@ def traiter(zpath, sit_path, relais=None, excel=True):
     except Exception as e:
         print('  (permis BDNB non exploités :', e, ')'); sit = pd.DataFrame(columns=['batiment_groupe_id'])
 
+    # 8a. gaz (données locales de l'énergie GRDF/Enedis agrégées par la BDNB) : dernier millésime, consommation professionnelle en kWh → MWh
+    try:
+        gz = lire(z, 'batiment_groupe_dle_gaz_multimillesime.csv', usecols=['batiment_groupe_id', 'millesime', 'conso_pro', 'nb_pdl_pro'])
+        gz['conso_pro'] = num(gz['conso_pro']); gz = gz[gz['conso_pro'] > 0].sort_values('millesime').groupby('batiment_groupe_id').tail(1)
+        gz['conso_gaz_mwh'] = (gz['conso_pro'] / 1000).round(1); gz['annee_gaz'] = gz['millesime']; gz = gz[['batiment_groupe_id', 'conso_gaz_mwh', 'annee_gaz']]
+    except Exception as e:
+        print('  (gaz non exploité :', e, ')'); gz = pd.DataFrame(columns=['batiment_groupe_id', 'conso_gaz_mwh', 'annee_gaz'])
+    # 8b. DPE tertiaire (ADEME via BDNB) : dernier DPE par bâtiment
+    try:
+        dp = lire(z, 'batiment_groupe_dpe_tertiaire.csv', usecols=['batiment_groupe_id', 'date_etablissement_dpe', 'classe_conso_energie_dpe_tertiaire', 'classe_emission_ges_dpe_tertiaire', 'conso_dpe_tertiaire_ep_m2', 'type_energie_chauffage', 'surface_utile'])
+        dp = dp.sort_values('date_etablissement_dpe').groupby('batiment_groupe_id').tail(1)
+        dp = dp.rename(columns={'date_etablissement_dpe': 'dpe_date', 'classe_conso_energie_dpe_tertiaire': 'dpe_classe', 'classe_emission_ges_dpe_tertiaire': 'dpe_ges', 'conso_dpe_tertiaire_ep_m2': 'dpe_kwh_m2', 'type_energie_chauffage': 'dpe_chauffage', 'surface_utile': 'dpe_surface_m2'})
+        dp['dpe_kwh_m2'] = num(dp['dpe_kwh_m2']); dp['dpe_surface_m2'] = num(dp['dpe_surface_m2'])
+    except Exception as e:
+        print('  (DPE tertiaire non exploité :', e, ')'); dp = pd.DataFrame(columns=['batiment_groupe_id', 'dpe_date', 'dpe_classe', 'dpe_ges', 'dpe_kwh_m2', 'dpe_chauffage', 'dpe_surface_m2'])
+
     # 8. parcelle principale de chaque bâtiment : foncier libre autour (PV au sol, ombrières)
     try:
         rbp2 = lire(z, 'rel_batiment_groupe_parcelle.csv', usecols=['batiment_groupe_id', 'parcelle_id', 'parcelle_principale'])
@@ -443,7 +618,7 @@ def traiter(zpath, sit_path, relais=None, excel=True):
         print('  (parcelles non exploitées :', e, ')'); parc = pd.DataFrame(columns=['batiment_groupe_id', 'parcelle_id', 'parcelle_m2'])
 
     # ---------------- assemblage ----------------
-    df = bg.merge(syn, on='batiment_groupe_id', how='left').merge(parc, on='batiment_groupe_id', how='left').merge(ffo, on='batiment_groupe_id', how='left').merge(topo, on='batiment_groupe_id', how='left') \
+    df = bg.merge(syn, on='batiment_groupe_id', how='left').merge(parc, on='batiment_groupe_id', how='left').merge(gz, on='batiment_groupe_id', how='left').merge(dp, on='batiment_groupe_id', how='left').merge(ffo, on='batiment_groupe_id', how='left').merge(topo, on='batiment_groupe_id', how='left') \
         .merge(dle, on='batiment_groupe_id', how='left').merge(adr, on='batiment_groupe_id', how='left').merge(rel, on='batiment_groupe_id', how='left') \
         .merge(urb, on='batiment_groupe_id', how='left').merge(hthd, on='batiment_groupe_id', how='left').merge(sit, on='batiment_groupe_id', how='left')
     usage = (df['usage_principal_bdnb_open'].fillna('') + ' | ' + df['usage_niveau_1_txt'].fillna('') + ' | ' + df['usage_bdtopo'].fillna('')).str.lower()
@@ -476,9 +651,26 @@ def traiter(zpath, sit_path, relais=None, excel=True):
     cand['contrainte'] = ['monument historique' if m else ('secteur protégé (ABF)' if a else '') for a, m in zip(abf, mon)]
     cand = cand.sort_values(['score', 'kwc_potentiel'], ascending=False)
 
+    # 9. position des bâtiments retenus : premier anneau de la géométrie (Lambert-93) → centroïde → WGS84 ; lu par morceaux pour ne garder que les candidats
+    try:
+        ids = set(cand['batiment_groupe_id']); pos = {}
+        with z.open('csv/batiment_groupe.csv') as f:
+            for chunk in pd.read_csv(io.TextIOWrapper(f, encoding='utf-8'), sep=';', usecols=['batiment_groupe_id', 'geom_groupe'], dtype=str, chunksize=200000):
+                ch = chunk[chunk['batiment_groupe_id'].isin(ids)]
+                for bid, g in zip(ch['batiment_groupe_id'], ch['geom_groupe'].fillna('')):
+                    m = re.search(r'\(\(([^()]+)\)', g)
+                    if not m: continue
+                    pts = [tuple(map(float, q.split()[:2])) for q in m.group(1).split(',') if len(q.split()) >= 2]
+                    if not pts: continue
+                    x = sum(q[0] for q in pts) / len(pts); y = sum(q[1] for q in pts) / len(pts); pos[bid] = lambert93_vers_wgs84(x, y)
+        cand['lat'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][0], 5) if b in pos else None); cand['lon'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][1], 5) if b in pos else None)
+        print(f'  Positions : {len(pos):,} bâtiments géolocalisés')
+    except Exception as e:
+        print('  (géométrie non exploitée :', e, ')'); cand['lat'] = None; cand['lon'] = None
+
     cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
             'kwc_potentiel', 'production_mwh', 'conso_pro_mwh', 'annee_conso', 'nb_pdl_pro', 'couverture_conso_pct', 'pdl_hta', 'contrainte', 'dist_monument_m',
-            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'parcelle_id', 'parcelle_m2', 'code_commune_insee', 'batiment_groupe_id']
+            'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'parcelle_id', 'parcelle_m2', 'conso_gaz_mwh', 'annee_gaz', 'dpe_classe', 'dpe_ges', 'dpe_kwh_m2', 'dpe_chauffage', 'dpe_surface_m2', 'dpe_date', 'lat', 'lon', 'code_commune_insee', 'batiment_groupe_id']
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
 
     # propriétaires multi-sites (comptes clés)
