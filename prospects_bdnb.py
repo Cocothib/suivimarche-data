@@ -708,12 +708,17 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
-    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees'), ('_enseignes_complet', 'enseignes', 'enseignes sous marque : OpenStreetMap (© contributeurs OSM, ODbL) ; propriétaire des murs = bâtiment BDNB ≥ 400 m² le plus proche (≤ 60 m), personnes morales seulement')):
+    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
         val = r.pop(cle, None)
         if val is not None:
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'source': meta, 'donnees': val}, f, ensure_ascii=False, separators=(',', ':'))
             print(f'  → {dossier}/{dep}.json')
+    ens = r.pop('_enseignes_complet', None)
+    if ens is not None:   # enseignes sous marque : publié dans parkings/ (dossier déjà versionné par le workflow) sous le nom enseignes-<dep>.json
+        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'enseignes-' + dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'n': len(ens), 'dmax_m': ENSEIGNE_DMAX, 'source': 'enseignes sous marque : OpenStreetMap (© contributeurs OSM, ODbL) ; propriétaire des murs = bâtiment BDNB ≥ 400 m² le plus proche, personnes morales seulement', 'donnees': ens}, f, ensure_ascii=False, separators=(',', ':'))
+        print(f'  → parkings/enseignes-{dep}.json : {len(ens):,} enseignes')
     complet = r.pop('_parkings_complet', None)
     if complet is not None:   # liste complète des parkings du département, fichier séparé chargé à la demande par SuiviMarché
         d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
