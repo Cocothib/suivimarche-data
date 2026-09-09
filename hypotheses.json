@@ -1,0 +1,9 @@
+{
+ "emprise_min_m2": 400,
+ "part_toiture": 0.45,
+ "m2_par_kwc": 5.5,
+ "productible_kwh_kwc": 1050,
+ "kwc_min": 36,
+ "par": "valeurs initiales",
+ "date": "2026-09-09"
+}

@@ -305,7 +305,27 @@ def dep_du_csv(path):
         return first[head.index('DEP_CODE')] if 'DEP_CODE' in head and len(first) > head.index('DEP_CODE') else None
     except Exception: return None
 
+HYPOTHESES_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hypotheses.json')
+
+def charger_hypotheses(path=HYPOTHESES_JSON):
+    """hypothèses de sélection et de potentiel écrites par SuiviMarché (page Paramètres) ou à la main : remplacent les constantes"""
+    global EMPRISE_MIN, PART_TOITURE, M2_PAR_KWC, PRODUCTIBLE, KWC_MIN
+    if not os.path.exists(path): return None
+    try:
+        with open(path, encoding='utf-8') as f: h = json.load(f)
+    except Exception as e: print('  (hypotheses.json illisible, constantes conservées :', e, ')'); return None
+    def val(k, cur, lo, hi):
+        v = h.get(k)
+        try: v = float(v)
+        except Exception: return cur
+        return v if lo <= v <= hi else cur
+    EMPRISE_MIN = val('emprise_min_m2', EMPRISE_MIN, 100, 5000); PART_TOITURE = val('part_toiture', PART_TOITURE, 0.1, 0.9)
+    M2_PAR_KWC = val('m2_par_kwc', M2_PAR_KWC, 3, 10); PRODUCTIBLE = val('productible_kwh_kwc', PRODUCTIBLE, 700, 1500); KWC_MIN = val('kwc_min', KWC_MIN, 0, 500)
+    print(f'  hypothèses ({os.path.basename(path)}) : emprise ≥ {EMPRISE_MIN:g} m², toiture {PART_TOITURE:.0%}, {M2_PAR_KWC:g} m²/kWc, {PRODUCTIBLE:g} kWh/kWc, potentiel > {KWC_MIN:g} kWc' + (f" — {h.get('par', '')} le {h.get('date', '')[:10]}" if h.get('par') else ''))
+    return h
+
 def main():
+    charger_hypotheses()
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument('cibles', nargs='*'); ap.add_argument('--telecharger', action='store_true'); ap.add_argument('--millesime', default=BDNB_MILLESIME)
     ap.add_argument('--relais'); ap.add_argument('--sans-excel', action='store_true'); ap.add_argument('--nettoyer', action='store_true'); ap.add_argument('--dossier')
