@@ -236,17 +236,17 @@ def parkings_osm(dep):
         com = ''
         for insee, nom, (x0, y0, x1, y1), rings in coms:
             if x0 <= lon <= x1 and y0 <= lat <= y1 and any(_dans((lon, lat), rg) for rg in rings): com = nom; break
-        rows.append({'id': int(el['id']), 'nom': (t.get('name') or t.get('operator') or t.get('brand') or '')[:60], 'com': com, 'm2': int(a), 'lat': round(lat, 5), 'lon': round(lon, 5), 'acces': t.get('access', ''), 'places': t.get('capacity', ''), 'cle': sorted(_cle_parking(t))})
+        rows.append({'id': int(el['id']), 'nom': (t.get('name') or t.get('operator') or t.get('brand') or '')[:60], 'op': (t.get('operator') or '')[:60], 'brand': (t.get('brand') or '')[:40], 'com': com, 'm2': int(a), 'lat': round(lat, 5), 'lon': round(lon, 5), 'acces': t.get('access', ''), 'places': t.get('capacity', ''), 'cle': sorted(_cle_parking(t))})
     rows.sort(key=lambda r: -r['m2'])
     geo = set()                                                     # noms de communes du département : jamais des clés d'enseigne (« Calais », « Nantes »…)
     for _, nom, _, _ in coms: geo |= {m for m in re.split(r'[^a-z0-9]+', __import__('unicodedata').normalize('NFKD', nom).encode('ascii', 'ignore').decode().lower()) if len(m) >= 4}
     for r in rows: r['cle'] = [m for m in r['cle'] if m not in geo]
     n10 = sum(1 for r in rows if r['m2'] >= 10000)
     top = [r for r in rows if r['nom']][:30] + [r for r in rows if not r['nom'] and r['m2'] >= 10000][:20]
-    print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés)')
+    print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés, {sum(1 for r in rows if r["op"] or r["brand"])} avec exploitant ou enseigne)')
     return {'n1500': len(rows), 'n10000': n10, 'm2': int(sum(r['m2'] for r in rows)), 'm2_10000': int(sum(r['m2'] for r in rows if r['m2'] >= 10000)), 'nommes': sum(1 for r in rows if r['nom']), 'top': top,
             'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo,   # 'tous' et 'geo' servent au rapprochement puis sont retirés
-            'complet': [{k: r[k] for k in ('id', 'nom', 'com', 'm2', 'lat', 'lon', 'acces', 'places')} for r in rows]}   # liste complète → parkings/<dep>.json
+            'complet': [{k: r[k] for k in ('id', 'nom', 'op', 'brand', 'com', 'm2', 'lat', 'lon', 'acces', 'places') if r.get(k)} for r in rows], 'exploitants': sum(1 for r in rows if r['op'] or r['brand'])}   # liste complète → parkings/<dep>.json
 
 def rapprocher_parkings(cibles, parkings, props):
     """rattache les parkings nommés aux cibles (mots significatifs du nom OSM présents dans la raison sociale ou le nom du propriétaire BDNB)"""
