@@ -80,7 +80,7 @@ jobs:
           for d in ${{ steps.liste.outputs.deps }}; do
             echo "=== Département $d ($MILLESIME) ==="
             if python prospects_bdnb.py "$d" --telecharger --millesime "$MILLESIME" --dossier /tmp/bdnb --relais bdnb.json --sans-excel --nettoyer; then
-              git add bdnb.json
+              git add bdnb.json parkings/
               if git diff --cached --quiet; then echo "Aucun changement"; else
                 git commit -q -m "BDNB $d ($MILLESIME)"
                 for i in 1 2 3 4 5; do git pull --rebase -q && git push -q && break || { echo "push refusé, nouvel essai $i"; sleep 30; }; done
@@ -96,7 +96,7 @@ jobs:
         run: |
           git config user.name 'relais-bot'
           git config user.email 'relais-bot@users.noreply.github.com'
-          git add bdnb.json
+          git add bdnb.json parkings/
           if git diff --cached --quiet; then echo 'Rien à publier'; else
             git commit -q -m "BDNB : vérification du millésime ($(date -u +%F))"
             for i in 1 2 3; do git pull --rebase -q && git push -q && break || { echo "push refusé, nouvel essai $i"; sleep 30; }; done
