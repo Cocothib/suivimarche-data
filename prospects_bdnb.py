@@ -106,6 +106,9 @@ def resume_departement(dep, zpath, out, props, com, permis):
     except Exception as e: print('  (solaire OSM non exploité :', e, ')'); so = None
     try: ic = icpe_departement(dep)
     except Exception as e: print('  (ICPE non exploitées :', e, ')'); ic = None
+    try: en = enseignes_osm(dep)
+    except Exception as e: print('  (enseignes OSM non exploitées :', e, ')'); en = None
+    if en: rattacher_enseignes(en, out)
     dossier = os.environ.get('BDNB_DOSSIER') or os.path.dirname(os.path.abspath(zpath))
     bd = bdappv_par_commune(dep, dossier)
     # contacts publics, friches, émissions par site, procédures collectives
@@ -187,8 +190,15 @@ def resume_departement(dep, zpath, out, props, com, permis):
                         for d_, i in _proches(gi, ic, pos[b][0], pos[b][1], 80):
                             if ic[i]['aiot'] not in vus: lst.append(dict(ic[i], d=int(d_))); vus.add(ic[i]['aiot'])
                 if lst: e['icpe'] = resume_icpe(lst)
+        if en:
+            for e in cr:
+                sirens = set([e['siren']] + list(e.get('via') or [])); lst = [x for x in en if x.get('siren') and x['siren'] in sirens]
+                if lst: e['enseignes'] = {'n': len(lst), 'l': [{'b': x['brand'], 't': x['type'], 'com': x['com']} for x in lst[:6]]}
         for e in cr: e.pop('bat_ids', None)
         r['croisement'] = cr
+    if en is not None:
+        r['enseignes'] = resume_enseignes(en)
+        r['_enseignes_complet'] = [{k: v for k, v in x.items() if k != 'cle' and v not in (None, '', [], False)} for x in en]
     if pk:
         r['_parkings_complet'] = pk.pop('complet', None); r['parkings'] = pk
     if so is not None or bd:
@@ -600,6 +610,84 @@ def parkings_osm(dep):
             'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo,   # 'tous' et 'geo' servent au rapprochement puis sont retirés
             'complet': [{k: r[k] for k in ('id', 'nom', 'op', 'brand', 'com', 'm2', 'lat', 'lon', 'acces', 'places') if r.get(k)} for r in rows], 'exploitants': sum(1 for r in rows if r['op'] or r['brand'])}   # liste complète → parkings/<dep>.json
 
+def _overpass(q, essais=3):
+    """requête Overpass avec bascule de serveur et nouvel essai ; None si tout échoue"""
+    import time
+    for essai in range(essais):
+        for base in OVERPASS:
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=300) as r: return json.load(r)
+            except Exception as e: print('  (Overpass', base.split('/')[2], ':', e, ')')
+        time.sleep(30)
+    return None
+
+# ---------------- enseignes sous marque (OSM) : magasins, restauration, stations, banques, salles de sport, hôtels ----------------
+# Le propriétaire des murs (bâtiment BDNB ≥ 400 m² le plus proche) est souvent une SCI, un franchisé ou une foncière locale,
+# distinct de l'enseigne : c'est lui qui décide d'une toiture solaire ou d'une ombrière.
+ENSEIGNE_AMENITY = {'fast_food': 'restauration rapide', 'restaurant': 'restaurant', 'fuel': 'station-service', 'bank': 'banque', 'car_wash': 'lavage auto', 'cinema': 'cinéma', 'pharmacy': 'pharmacie'}
+ENSEIGNE_LEISURE = {'fitness_centre': 'salle de sport', 'sports_centre': 'centre sportif', 'bowling_alley': 'bowling'}
+ENSEIGNE_DMAX = 60          # m : distance maximale entre le point OSM et le bâtiment BDNB rattaché
+def enseignes_osm(dep):
+    """points d'intérêt portant une marque (brand) dans OpenStreetMap, avec commune, type, position"""
+    q = (f'[out:json][timeout:280];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;(nwr["brand"]["shop"](area.a);'
+         f'nwr["brand"]["amenity"~"^({"|".join(ENSEIGNE_AMENITY)})$"](area.a);nwr["brand"]["leisure"~"^({"|".join(ENSEIGNE_LEISURE)})$"](area.a);nwr["brand"]["tourism"="hotel"](area.a););out center tags;')
+    data = _overpass(q)
+    if data is None: return None
+    try: coms = communes_contours(dep)
+    except Exception as e: print('  (contours des communes indisponibles :', e, ')'); coms = []
+    rows = []
+    for el in data.get('elements', []):
+        t = el.get('tags') or {}; c = el.get('center') or {'lat': el.get('lat'), 'lon': el.get('lon')}
+        if c.get('lat') is None or not t.get('brand'): continue
+        lat, lon = float(c['lat']), float(c['lon'])
+        if t.get('shop'): typ = 'commerce · ' + str(t['shop']).replace('_', ' ').replace(';', ', ')[:30]
+        elif t.get('amenity') in ENSEIGNE_AMENITY: typ = ENSEIGNE_AMENITY[t['amenity']]
+        elif t.get('leisure') in ENSEIGNE_LEISURE: typ = ENSEIGNE_LEISURE[t['leisure']]
+        elif t.get('tourism') == 'hotel': typ = 'hôtel'
+        else: continue
+        com = ''
+        for insee, nom, (x0, y0, x1, y1), rings in coms:
+            if x0 <= lon <= x1 and y0 <= lat <= y1 and any(_dans((lon, lat), rg) for rg in rings): com = nom; break
+        rows.append({'id': f"{el.get('type', 'n')[0]}{el.get('id')}", 'brand': str(t.get('brand'))[:40], 'nom': (t.get('name') or '')[:60], 'op': (t.get('operator') or '')[:60], 'type': typ, 'com': com,
+                     'lat': round(lat, 5), 'lon': round(lon, 5), 'cle': _mots(t.get('brand', '')) | _mots(t.get('operator', ''))})
+    print(f'  Enseignes OSM : {len(rows):,} points sous marque ({len(set(r["brand"] for r in rows))} marques)')
+    return rows
+
+def rattacher_enseignes(en, out):
+    """bâtiment BDNB le plus proche (≤ ENSEIGNE_DMAX m) de chaque enseigne : propriétaire des murs (SIREN, nom), toiture, emprise.
+       murs_tiers = le propriétaire ne porte pas le nom de la marque (franchisé, SCI, foncière, investisseur)"""
+    if not en or out is None or 'lat' not in out.columns: return
+    cols = {c: (c in out.columns) for c in ('batiment_groupe_id', 'lat', 'lon', 'siren', 'proprietaire', 'kwc_potentiel', 'emprise_sol_m2', 'usage', 'adresse')}
+    g = lambda c, d=None: (out[c] if cols.get(c) else pd.Series([d] * len(out), index=out.index))
+    bats = [{'id': str(b), 'lat': float(la), 'lon': float(lo), 'siren': str(sn or ''), 'prop': str(pn or '')[:60], 'kwc': int(k or 0), 'm2': int(m or 0), 'usage': str(u or '')[:30], 'adr': str(a or '')[:60]}
+            for b, la, lo, sn, pn, k, m, u, a in zip(g('batiment_groupe_id', ''), out['lat'], out['lon'], g('siren', '').fillna(''), g('proprietaire', '').fillna(''), g('kwc_potentiel', 0).fillna(0), g('emprise_sol_m2', 0).fillna(0), g('usage', '').fillna(''), g('adresse', '').fillna(''))
+            if la == la and lo == lo and la is not None]
+    if not bats: return
+    gb = _grille(bats); n = 0; nt = 0
+    for x in en:
+        pr = _proches(gb, bats, x['lat'], x['lon'], ENSEIGNE_DMAX)
+        if not pr: continue
+        d_, i = pr[0]; b = bats[i]; n += 1
+        x['bat'] = b['id']; x['d'] = int(d_); x['kwc'] = b['kwc']; x['m2'] = b['m2']; x['usage'] = b['usage']; x['adr'] = b['adr']
+        if b['siren']:
+            x['siren'] = b['siren']; x['prop'] = b['prop']
+            x['murs_tiers'] = not (x['cle'] & _mots(b['prop']))
+            if x['murs_tiers']: nt += 1
+    print(f'  Enseignes rattachées à un bâtiment BDNB : {n:,} ({nt:,} dont les murs appartiennent à un tiers de la marque)')
+
+def resume_enseignes(en):
+    """résumé publié dans bdnb.json : comptes et propriétaires de murs les plus présents (plusieurs enseignes ou grande toiture)"""
+    par = {}
+    for x in en:
+        if not x.get('siren'): continue
+        p = par.setdefault(x['siren'], {'siren': x['siren'], 'nom': x['prop'], 'n': 0, 'kwc': 0, 'brands': [], 'tiers': 0, 'com': x['com']})
+        p['n'] += 1; p['kwc'] += x.get('kwc', 0); p['tiers'] += 1 if x.get('murs_tiers') else 0
+        if x['brand'] not in p['brands'] and len(p['brands']) < 6: p['brands'].append(x['brand'])
+    top = sorted(par.values(), key=lambda p: (-p['n'], -p['kwc']))
+    top = [p for p in top if p['n'] >= 2 or p['kwc'] >= 100][:25]
+    return {'n': len(en), 'marques': len(set(x['brand'] for x in en)), 'rattachees': sum(1 for x in en if x.get('bat')), 'avec_prop': sum(1 for x in en if x.get('siren')), 'murs_tiers': sum(1 for x in en if x.get('murs_tiers')),
+            'kwc_tiers': int(sum(x.get('kwc', 0) for x in en if x.get('murs_tiers'))), 'proprietaires': top}
+
 def rapprocher_parkings(cibles, parkings, props):
     """rattache les parkings nommés aux cibles (mots significatifs du nom OSM présents dans la raison sociale ou le nom du propriétaire BDNB)"""
     if not parkings: return
@@ -620,7 +708,7 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
-    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
+    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees'), ('_enseignes_complet', 'enseignes', 'enseignes sous marque : OpenStreetMap (© contributeurs OSM, ODbL) ; propriétaire des murs = bâtiment BDNB ≥ 400 m² le plus proche (≤ 60 m), personnes morales seulement')):
         val = r.pop(cle, None)
         if val is not None:
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
