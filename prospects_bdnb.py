@@ -104,7 +104,8 @@ def resume_departement(dep, zpath, out, props, com, permis):
     if cr is not None:
         if pk: rapprocher_parkings(cr, pk, props)
         r['croisement'] = cr
-    if pk: r['parkings'] = pk
+    if pk:
+        r['_parkings_complet'] = pk.pop('complet', None); r['parkings'] = pk
     return r
 
 # ---------------- croisement avec les bilans GES de l'ADEME (gros consommateurs) ----------------
@@ -244,7 +245,8 @@ def parkings_osm(dep):
     top = [r for r in rows if r['nom']][:30] + [r for r in rows if not r['nom'] and r['m2'] >= 10000][:20]
     print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés)')
     return {'n1500': len(rows), 'n10000': n10, 'm2': int(sum(r['m2'] for r in rows)), 'm2_10000': int(sum(r['m2'] for r in rows if r['m2'] >= 10000)), 'nommes': sum(1 for r in rows if r['nom']), 'top': top,
-            'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo}   # 'tous' et 'geo' servent au rapprochement puis sont retirés
+            'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo,   # 'tous' et 'geo' servent au rapprochement puis sont retirés
+            'complet': [{k: r[k] for k in ('id', 'nom', 'com', 'm2', 'lat', 'lon', 'acces', 'places')} for r in rows]}   # liste complète → parkings/<dep>.json
 
 def rapprocher_parkings(cibles, parkings, props):
     """rattache les parkings nommés aux cibles (mots significatifs du nom OSM présents dans la raison sociale ou le nom du propriétaire BDNB)"""
@@ -266,6 +268,11 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
+    complet = r.pop('_parkings_complet', None)
+    if complet is not None:   # liste complète des parkings du département, fichier séparé chargé à la demande par SuiviMarché
+        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'seuil_m2': PARKING_MIN, 'n': len(complet), 'source': 'OpenStreetMap (Overpass), © contributeurs OSM, ODbL', 'parkings': complet}, f, ensure_ascii=False, separators=(',', ':'))
+        print(f'  → parkings/{dep}.json : {len(complet):,} parkings')
     data = {}
     if os.path.exists(path):
         try:
