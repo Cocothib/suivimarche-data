@@ -156,7 +156,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
             cle = _mots(e['nom'])
             if cle and fr_cle:
                 lst = [x for c_, x in fr_cle if len(c_ & cle) >= 2 or (len(c_ & cle) == 1 and len(cle) == 1 and len(c_) == 1)]
-                if lst: e['friches'] = [{'nom': x['nom'], 'com': x['com'], 'm2': x.get('m2'), 'statut': x.get('statut', '')} for x in lst[:3]]
+                if lst: e['friches'] = [{'nom': x.get('nom') or x.get('id', ''), 'com': x.get('com', ''), 'm2': x.get('m2'), 'statut': x.get('statut', '')} for x in lst[:3]]
     r['contacts'] = {'finess_n': len(fi), 'maires_n': len(el['maires']), 'epci_n': len(el['epci']), 'osm_n': len(co or [])}
     r['_contacts_complet'] = {'finess': fi, 'elus': el}   # les contacts OSM ne servent qu'au rattachement (osm_contacts des cibles)
     if fr is not None: r['friches'] = {'n': len(fr), 'ha': int(sum((x.get('m2') or 0) for x in fr) / 10000), 'sans_projet': sum(1 for x in fr if 'sans projet' in (x.get('statut') or '') or 'potentielle' in (x.get('statut') or ''))}; r['_friches_complet'] = fr
