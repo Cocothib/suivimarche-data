@@ -106,7 +106,62 @@ def resume_departement(dep, zpath, out, props, com, permis):
     except Exception as e: print('  (solaire OSM non exploité :', e, ')'); so = None
     try: ic = icpe_departement(dep)
     except Exception as e: print('  (ICPE non exploitées :', e, ')'); ic = None
-    bd = bdappv_par_commune(dep, os.environ.get('BDNB_DOSSIER') or os.path.dirname(os.path.abspath(zpath)))
+    dossier = os.environ.get('BDNB_DOSSIER') or os.path.dirname(os.path.abspath(zpath))
+    bd = bdappv_par_commune(dep, dossier)
+    # contacts publics, friches, émissions par site, procédures collectives
+    try: fi = finess_departement(dep, dossier)
+    except Exception as e: print('  (FINESS non exploité :', e, ')'); fi = []
+    try: el = elus_departement(dep, dossier)
+    except Exception as e: print('  (élus non exploités :', e, ')'); el = {'maires': {}, 'epci': {}}
+    try: co = contacts_osm(dep)
+    except Exception as e: print('  (contacts OSM non exploités :', e, ')'); co = None
+    try: fr = friches_departement(dep, dossier)
+    except Exception as e: print('  (friches non exploitées :', e, ')'); fr = None
+    try: ir = irep_departement(dep, dossier)
+    except Exception as e: print('  (IREP non exploité :', e, ')'); ir = None
+    try: pc = bodacc_collectives(dep)
+    except Exception as e: print('  (BODACC non exploité :', e, ')'); pc = {}
+    for p in r.get('proprietaires', []):
+        if p.get('siren') in pc: p['pc'] = pc[p['siren']]
+    if cr is not None:
+        pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
+        fi_par_siren = {}
+        for x in fi: fi_par_siren.setdefault(x['siret'][:9], []).append(x)
+        ir_par_siren = {}
+        for x in (ir or []): ir_par_siren.setdefault(x['siret'][:9], []).append(x)
+        gc = _grille(co) if co else None; gi2 = _grille([x for x in (ir or []) if x['lat']]) if ir else None; ir_pos = [x for x in (ir or []) if x['lat']]
+        fr_cle = [(set(_mots(x.get('prop_nom', ''))), x) for x in (fr or []) if x.get('prop_nom')]
+        for e in cr:
+            sirens = set([e['siren']] + list(e.get('via') or []))
+            if e['siren'] in pc: e['pc'] = pc[e['siren']]
+            lst = [x for sn in sirens for x in fi_par_siren.get(sn, [])]
+            if lst: e['finess'] = [{'nom': x['nom'], 'com': x['com'], 'tel': x['tel'], 'cat': x['cat']} for x in lst[:6]]
+            lst = [x for sn in sirens for x in ir_par_siren.get(sn, [])]; vus = set(x['id'] for x in lst)
+            if gi2:
+                for b in e.get('bat_ids', []):
+                    if b in pos:
+                        for d_, i in _proches(gi2, ir_pos, pos[b][0], pos[b][1], 80):
+                            if ir_pos[i]['id'] not in vus: lst.append(ir_pos[i]); vus.add(ir_pos[i]['id'])
+            if lst: e['irep'] = {'n': len(lst), 'co2_t': int(sum(x['co2_t'] for x in lst)), 'annee': IREP_ANNEE, 'sites': [{'nom': x['nom'], 'com': x['com'], 'co2_t': x['co2_t'], 'polluants': x['polluants'][:3]} for x in sorted(lst, key=lambda x: -x['co2_t'])[:5]]}
+            if gc:
+                trouves = {}
+                for b in e.get('bat_ids', []):
+                    if b in pos:
+                        for d_, i in _proches(gc, co, pos[b][0], pos[b][1], 80): trouves[i] = min(trouves.get(i, 1e9), d_)
+                cle = _mots(e['nom'])
+                for i, x in enumerate(co):
+                    if i not in trouves and cle and len(set(x['cle']) & cle) >= min(2, len(cle)) and len(cle) >= 1 and (len(set(x['cle']) & cle) >= 2 or len(cle) == 1): trouves[i] = -1
+                lst = [dict(co[i], d=int(d_) if d_ >= 0 else None) for i, d_ in sorted(trouves.items(), key=lambda kv: kv[1])][:4]
+                if lst: e['osm_contacts'] = [{k: v for k, v in {'nom': x['nom'] or x['op'], 'tel': x['tel'], 'mail': x['mail'], 'site': x['site'], 'd': x['d'], 'id': x['id']}.items() if v not in (None, '')} for x in lst]
+            cle = _mots(e['nom'])
+            if cle and fr_cle:
+                lst = [x for c_, x in fr_cle if len(c_ & cle) >= 2 or (len(c_ & cle) == 1 and len(cle) == 1 and len(c_) == 1)]
+                if lst: e['friches'] = [{'nom': x['nom'], 'com': x['com'], 'm2': x.get('m2'), 'statut': x.get('statut', '')} for x in lst[:3]]
+    r['contacts'] = {'finess_n': len(fi), 'maires_n': len(el['maires']), 'epci_n': len(el['epci']), 'osm_n': len(co or [])}
+    r['_contacts_complet'] = {'finess': fi, 'elus': el}   # les contacts OSM ne servent qu'au rattachement (osm_contacts des cibles)
+    if fr is not None: r['friches'] = {'n': len(fr), 'ha': int(sum((x.get('m2') or 0) for x in fr) / 10000), 'sans_projet': sum(1 for x in fr if 'sans projet' in (x.get('statut') or '') or 'potentielle' in (x.get('statut') or ''))}; r['_friches_complet'] = fr
+    if ir is not None: r['irep'] = {'n': len(ir), 'co2_t': int(sum(x['co2_t'] for x in ir)), 'annee': IREP_ANNEE}; r['_irep_complet'] = ir
+    r['pc_n'] = len(pc)
     if cr is not None:
         if pk: rapprocher_parkings(cr, pk, props)
         pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
@@ -235,6 +290,150 @@ def icpe_departement(dep):
     print(f'  ICPE Géorisques : {len(rows):,} installations en activité ({sum(1 for r in rows if r["siret"])} avec SIRET)')
     return rows
 
+# ---------------- contacts publics : FINESS (santé), élus (RNE), contacts OpenStreetMap ----------------
+DATAGOUV = 'https://www.data.gouv.fr/api/1/datasets/'
+def _ressource(dataset, motif, fmt=None):
+    """URL de la ressource d'un jeu data.gouv dont le titre contient motif (les URL sont datées)."""
+    with urllib.request.urlopen(urllib.request.Request(DATAGOUV + dataset + '/', headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=60) as r: j = json.load(r)
+    for x in j.get('resources', []):
+        if motif.lower() in (x.get('title') or '').lower() and (not fmt or (x.get('format') or '').lower() == fmt): return x['url']
+    return None
+def _fichier(url, dossier, nom):
+    """Télécharge une fois par passage (cache dans le dossier de travail)."""
+    os.makedirs(dossier, exist_ok=True); f = os.path.join(dossier, nom)
+    if not os.path.exists(f) or os.path.getsize(f) < 1000:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=600) as r, open(f + '.tmp', 'wb') as o: shutil.copyfileobj(r, o)
+        os.replace(f + '.tmp', f)
+    return f
+FINESS_CAT_EXCLUES = ('pharmacie', 'laboratoire', 'ambulance', 'cabinet', 'centre de sant', 'maison de sant', 'transport', 'pmi', 'planification', 'protection maternelle')
+def finess_departement(dep, dossier):
+    """Établissements sanitaires et sociaux du département (FINESS, extraction data.gouv) : nom, commune, téléphone, SIRET, catégorie."""
+    url = _ressource('finess-extraction-du-fichier-des-etablissements', 'Extraction Finess des Etablissements au')
+    if not url: return []
+    f = _fichier(url, dossier, 'finess.csv'); rows = []
+    with open(f, encoding='utf-8', errors='replace') as fh:
+        for l in fh:
+            if not l.startswith('structureet;'): continue
+            c = l.rstrip('\n').split(';')
+            if len(c) < 24 or c[13] != dep: continue
+            cat = c[21] or c[19]
+            if any(x in cat.lower() for x in FINESS_CAT_EXCLUES) or not c[16]: continue
+            rows.append({'finess': c[1], 'nom': (c[4] or c[3])[:70], 'com': c[15].split(' ', 1)[1] if ' ' in c[15] else c[15], 'cp': c[15].split(' ')[0], 'insee': (dep + c[12]) if c[12] else '', 'tel': c[16], 'siret': c[22], 'cat': cat[:50], 'ej': c[2]})
+    print(f'  FINESS : {len(rows):,} établissements avec téléphone')
+    return rows
+def elus_departement(dep, dossier):
+    """Maires par commune et présidents d'intercommunalité (répertoire national des élus)."""
+    import csv
+    out = {'maires': {}, 'epci': {}}
+    try:
+        f = _fichier(_ressource('repertoire-national-des-elus-1', 'elus-maires'), dossier, 'elus-maires.csv')
+        with open(f, encoding='utf-8', newline='') as fh:
+            for r in csv.DictReader(fh, delimiter=';'):
+                if r.get('Code du département') != dep: continue
+                out['maires'][r['Code de la commune']] = {'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'com': r['Libellé de la commune'], 'depuis': r.get('Date de début de la fonction') or ''}
+    except Exception as e: print('  (maires RNE non exploités :', e, ')')
+    try:
+        f = _fichier(_ressource('repertoire-national-des-elus-1', 'elus-conseillers-communautaires'), dossier, 'elus-epci.csv')
+        with open(f, encoding='utf-8', newline='') as fh:
+            for r in csv.DictReader(fh, delimiter=';'):
+                fo = (r.get('Libellé de la fonction') or '').lower()
+                if r.get('Code du département') != dep or not fo.startswith('président'): continue
+                out['epci'][r['N° SIREN']] = {'epci': r["Libellé de l'EPCI"], 'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'com': r['Libellé de la commune de rattachement'], 'depuis': r.get('Date de début de la fonction') or ''}
+    except Exception as e: print('  (présidents EPCI non exploités :', e, ')')
+    print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI")
+    return out
+def contacts_osm(dep):
+    """Objets nommés d'OpenStreetMap portant un téléphone, un courriel ou un site (sites industriels, commerciaux, bureaux, entrepôts, fermes)."""
+    import time
+    sel = '["name"][~"^(phone|contact:phone|email|contact:email|website|contact:website)$"~"."]'
+    q = (f'[out:json][timeout:240];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;(nwr{sel}["landuse"~"industrial|commercial|retail|farmyard"](area.a);nwr{sel}["building"~"industrial|warehouse|commercial|retail|office|farm"](area.a);'
+         f'nwr{sel}["industrial"](area.a);nwr{sel}["office"~"company|industrial|energy_supplier"](area.a);nwr{sel}["man_made"~"works"](area.a);nwr{sel}["craft"](area.a);nwr{sel}["amenity"~"hospital|clinic|school|college|university|townhall|social_facility"](area.a););out tags center;')
+    data = None
+    for essai in range(3):
+        for base in OVERPASS:
+            try:
+                with urllib.request.urlopen(urllib.request.Request(base, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=300) as r: data = json.load(r)
+                break
+            except Exception as e: print('  (Overpass contacts', base.split('/')[2], ':', e, ')')
+        if data is not None: break
+        time.sleep(30)
+    if data is None: return None
+    rows = []
+    for el in data.get('elements', []):
+        t = el.get('tags') or {}; c = el.get('center') or {'lat': el.get('lat'), 'lon': el.get('lon')}
+        if c.get('lat') is None: continue
+        nom = (t.get('name') or '')[:60]; op = (t.get('operator') or t.get('brand') or '')[:60]
+        rows.append({'id': f"{el.get('type', 'w')[0]}{el.get('id')}", 'nom': nom, 'op': op, 'tel': (t.get('phone') or t.get('contact:phone') or '')[:40], 'mail': (t.get('email') or t.get('contact:email') or '')[:80], 'site': (t.get('website') or t.get('contact:website') or '')[:120], 'lat': round(c['lat'], 5), 'lon': round(c['lon'], 5), 'cle': sorted(_mots(nom) | _mots(op))})
+    print(f'  Contacts OSM : {len(rows):,} objets nommés ({sum(1 for r in rows if r["tel"])} téléphones, {sum(1 for r in rows if r["mail"])} courriels, {sum(1 for r in rows if r["site"])} sites)')
+    return rows
+# ---------------- friches (Cartofriches, Cerema) ----------------
+def friches_departement(dep, dossier):
+    url = _ressource('sites-references-dans-cartofriches', 'friches-standard', 'csv')
+    if not url: return None
+    f = _fichier(url, dossier, 'friches.csv')
+    df = pd.read_csv(f, sep=';', quotechar='"', dtype=str, na_values=['NA'], keep_default_na=False, low_memory=False)
+    df = df[df['comm_insee'].fillna('').str.startswith(dep)].fillna('')
+    rows = []
+    for _, r in df.iterrows():
+        m = re.match(r'POINT \(([-\d.]+) ([-\d.]+)\)', str(r.get('geompoint') or ''))
+        surf = num(pd.Series([r.get('unite_fonciere_surface')])).iloc[0] if r.get('unite_fonciere_surface') else None
+        rows.append({k: v for k, v in {'id': r['site_id'], 'nom': (r.get('site_nom') or '')[:70], 'type': r.get('site_type') or '', 'com': r.get('comm_nom') or '', 'insee': r.get('comm_insee') or '', 'statut': r.get('site_statut') or '', 'm2': int(surf) if surf == surf and surf else None,
+                                        'act': (r.get('activite_libelle') or '')[:60], 'fin': r.get('activite_fin_annee') or '', 'prop': r.get('proprio_type') or '', 'prop_nom': (r.get('proprio_nom') or '')[:60] if (r.get('proprio_nom') or '') != 'Nom anonymisé' else '', 'poll': r.get('sol_pollution_existe') or '', 'zone': r.get('urba_zone_type') or '', 'bati': r.get('bati_etat') or '',
+                                        'lat': float(m.group(2)) if m else None, 'lon': float(m.group(1)) if m else None, 'src': (r.get('source_nom') or '')[:40], 'url': r.get('site_url') or ''}.items() if v not in (None, '')})
+    print(f'  Friches Cartofriches : {len(rows):,} sites ({sum((x.get("m2") or 0) for x in rows) / 10000:,.0f} ha)')
+    return rows
+# ---------------- émissions déclarées par établissement (IREP, Géorisques) ----------------
+IREP_ANNEE = 2024
+def irep_departement(dep, dossier):
+    import zipfile, csv, io
+    f = _fichier(f'https://files.georisques.fr/irep/{IREP_ANNEE}.zip', dossier, f'irep{IREP_ANNEE}.zip')
+    zf = zipfile.ZipFile(f); etab = {}
+    def lire_csv(nom):
+        n = [x for x in zf.namelist() if x.lower().endswith(nom)][0]
+        return csv.DictReader(io.TextIOWrapper(zf.open(n), encoding='utf-8', errors='replace'), delimiter=';')
+    for r in lire_csv('etablissements.csv'):
+        if (r.get('code_departement') or '').strip() != dep: continue
+        try: lat, lon = float(r.get('coordonnees_y') or 'nan'), float(r.get('coordonnees_x') or 'nan')
+        except ValueError: lat = lon = float('nan')
+        etab[r['identifiant']] = {'id': r['identifiant'], 'nom': (r.get('nom_etablissement') or '')[:60], 'siret': r.get('numero_siret') or '', 'com': r.get('commune') or '', 'insee': r.get('code_insee') or '', 'lat': round(lat, 5) if lat == lat else None, 'lon': round(lon, 5) if lon == lon else None, 'ape': r.get('code_ape') or '', 'co2_t': 0, 'polluants': []}
+    for r in lire_csv('emissions.csv'):
+        e = etab.get(r.get('identifiant'))
+        if not e or (r.get('milieu') or '') != 'Air': continue
+        pol = r.get('polluant') or ''; qv = (r.get('quantite') or '').replace(',', '.')
+        try: qte = float(qv)
+        except ValueError: continue
+        u = (r.get('unite') or '').lower(); kg = qte * (1000 if u.startswith('t') else 1)
+        pl = pol.lower()
+        if 'co2' in pl and 'non biomasse' in pl and 'total' not in pl: e['co2_t'] += kg / 1000; e['annee'] = r.get('annee_emission'); e['co2_src'] = 'fossile'
+        elif 'co2' in pl and 'total' in pl: e['co2_tot'] = e.get('co2_tot', 0) + kg / 1000; e['annee'] = e.get('annee') or r.get('annee_emission')
+        elif 'co2' in pl: pass
+        elif len(e['polluants']) < 4: e['polluants'].append(pol.split('(')[0].strip()[:30])
+    for x in etab.values():
+        if not x['co2_t'] and x.get('co2_tot'): x['co2_t'] = x['co2_tot']; x['co2_src'] = 'total (dont biomasse)'
+        x.pop('co2_tot', None)
+    rows = [dict(x, co2_t=int(x['co2_t'])) for x in etab.values() if x['co2_t'] > 0 or x['polluants']]
+    rows.sort(key=lambda x: -x['co2_t'])
+    print(f'  IREP {IREP_ANNEE} : {len(rows):,} établissements déclarants, {sum(x["co2_t"] for x in rows) / 1e6:,.1f} MtCO2')
+    return rows
+# ---------------- procédures collectives (BODACC, DILA) ----------------
+def bodacc_collectives(dep, annees=2):
+    """SIREN du département ayant fait l'objet d'une annonce de procédure collective récente : {siren: (date, nature)}."""
+    depuis = (datetime.date.today() - datetime.timedelta(days=365 * annees)).isoformat()
+    url = 'https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/exports/json?' + urllib.parse.urlencode({'where': f'numerodepartement="{dep}" and familleavis="collective" and dateparution>="{depuis}"', 'select': 'registre,dateparution,jugement'})
+    with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=600) as r: data = json.load(r)
+    out = {}
+    for x in data:
+        reg = x.get('registre') or []; sn = (reg[0] if isinstance(reg, list) and reg else str(reg)).replace(' ', '')
+        if len(sn) != 9: continue
+        j = x.get('jugement'); nat = ''
+        if isinstance(j, str):
+            try: j = json.loads(j)
+            except Exception: j = None
+        if isinstance(j, dict): nat = (j.get('nature') or j.get('famille') or '')[:80]
+        d = x.get('dateparution') or ''
+        if sn not in out or d > out[sn]['date']: out[sn] = {'date': d, 'nature': nat}
+    print(f'  BODACC : {len(out):,} SIREN en procédure collective depuis {depuis}')
+    return out
 RUBRIQUES_ENERGIE = {'2910': 'combustion', '2921': 'refroidissement (tours)', '4735': 'ammoniac (froid)', '1185': 'fluides frigorigènes', '4802': 'gaz fluorés (froid)', '3110': 'combustion > 50 MW', '2260': 'broyage', '2515': 'concassage', '2661': 'plastiques', '2450': 'imprimerie', '2560': 'travail des métaux', '2210': 'abattoir', '2221': 'alimentaire', '2230': 'lait', '2140': 'volailles', '2101': 'bovins', '2102': 'porcs', '2111': 'volailles', '2510': 'carrière', '3610': 'papier', '2410': 'bois'}
 
 def resume_icpe(lst):
@@ -421,7 +620,7 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
-    for cle, dossier, meta in (('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
+    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
         val = r.pop(cle, None)
         if val is not None:
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
