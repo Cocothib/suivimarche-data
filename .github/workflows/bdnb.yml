@@ -6,6 +6,10 @@ name: bdnb
 #    professionnels ≥ 400 m²) avec prospects_bdnb.py et publie le résumé dans bdnb.json.
 # Le zip est supprimé après chaque département (disque du runner limité) ; bdnb.json est poussé
 # après chaque département pour ne rien perdre si le délai est dépassé.
+# 3. Les 1er et 15 de chaque mois : passage bimensuel sur tous les départements, du plus ancien calcul
+#    au plus récent, pour rafraîchir les bases dérivées (bilans GES de l'ADEME, parkings et enseignes
+#    OpenStreetMap, solaire existant, ICPE Géorisques, contacts, friches Cartofriches, IREP) dont les
+#    sources bougent en continu ; si le délai est dépassé, la passe suivante reprend par les plus anciens.
 
 on:
   workflow_dispatch:
@@ -22,8 +26,13 @@ on:
         description: 'Nombre maximal de départements pour ce run'
         type: string
         default: '51'
+      tout:
+        description: 'Recalculer tous les départements, du plus ancien calcul au plus récent (rafraîchit les bases dérivées et les bilans GES)'
+        type: boolean
+        default: false
   schedule:
-    - cron: '20 1 5 * *'   # le 5 de chaque mois à 01:20 UTC : détecte un nouveau millésime et complète les départements manquants
+    - cron: '20 1 5 * *'      # le 5 de chaque mois à 01:20 UTC : détecte un nouveau millésime et complète les départements manquants
+    - cron: '20 1 1,15 * *'   # les 1er et 15 à 01:20 UTC : passage bimensuel sur tous les départements (bases dérivées, bilans GES)
 
 permissions:
   contents: write
@@ -49,9 +58,11 @@ jobs:
           DEPS: ${{ inputs.deps }}
           MILLESIME: ${{ inputs.millesime || 'auto' }}
           MAX: ${{ inputs.max || '51' }}
+          TOUT: ${{ inputs.tout && '1' || '0' }}
+          EVENEMENT: ${{ github.event_name }}
         run: |
           python - <<'EOF' >> "$GITHUB_OUTPUT"
-          import json, os, datetime
+          import json, os, sys, datetime
           import prospects_bdnb as pb
           tous = ['02','08','10','14','18','21','22','25','27','28','29','35','36','37','39','41','44','45','49','50','51','52','53','54','55','56','57','58','59','60','61','62','67','68','70','71','72','75','76','77','78','80','85','88','89','90','91','92','93','94','95']
           try: data = json.load(open('bdnb.json', encoding='utf-8'))
@@ -61,6 +72,12 @@ jobs:
           m = os.environ['MILLESIME'].strip() or 'auto'
           if m == 'auto': m = pb.detecter_millesime(connu)
           voulus = [d.zfill(2) for d in os.environ['DEPS'].split()]
+          jour = datetime.date.today().day
+          bimensuel = os.environ.get('TOUT') == '1' or (os.environ.get('EVENEMENT') == 'schedule' and jour in (1, 15))
+          if not voulus and bimensuel:
+              # tous les départements, les plus anciens calculs d'abord (un nouveau millésime passe en tête)
+              voulus = sorted(tous, key=lambda d: ('0' if (d not in deja or deja[d].get('millesime') != m) else '1') + str((deja.get(d) or {}).get('calcule') or ''))
+              print('# passage bimensuel : ' + ' '.join(voulus), file=sys.stderr)
           if not voulus: voulus = [d for d in tous if d not in deja or deja[d].get('millesime') != m]
           voulus = voulus[:int(os.environ['MAX'] or 51)]
           # trace de la vérification dans bdnb.json (même sans département à traiter)
