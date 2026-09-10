@@ -332,7 +332,7 @@ def finess_departement(dep, dossier):
     print(f'  FINESS : {len(rows):,} établissements avec téléphone')
     return rows
 def elus_departement(dep, dossier):
-    """Maires par commune et présidents d'intercommunalité (répertoire national des élus)."""
+    """Maires par commune, présidents d'intercommunalité et conseillers départementaux (répertoire national des élus)."""
     import csv
     out = {'maires': {}, 'epci': {}}
     try:
@@ -350,7 +350,18 @@ def elus_departement(dep, dossier):
                 if r.get('Code du département') != dep or not fo.startswith('président'): continue
                 out['epci'][r['N° SIREN']] = {'epci': r["Libellé de l'EPCI"], 'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'com': r['Libellé de la commune de rattachement'], 'depuis': r.get('Date de début de la fonction') or ''}
     except Exception as e: print('  (présidents EPCI non exploités :', e, ')')
-    print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI")
+    # conseillers départementaux : président, vice-présidents (rang) et conseillers par canton (fiche des Départements, comptes clés publics)
+    out['cd'] = []
+    try:
+        f = _fichier(_ressource('repertoire-national-des-elus-1', 'elus-conseillers-departementaux'), dossier, 'elus-cd.csv')
+        with open(f, encoding='utf-8', newline='') as fh:
+            for r in csv.DictReader(fh, delimiter=';'):
+                if r.get('Code du département') != dep: continue
+                fo = r.get('Libellé de la fonction') or ''; m = re.match(r'(\d+)(?:er|ère|ème)?\s+Vice', fo, re.I)
+                out['cd'].append({'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'canton': r.get('Libellé du canton') or '', 'code_canton': r.get('Code du canton') or '', 'fonction': fo, 'rang': int(m.group(1)) if m else (0 if fo.lower().startswith('président') else 99), 'depuis': r.get('Date de début de la fonction') or r.get('Date de début du mandat') or ''})
+        out['cd'].sort(key=lambda x: (x['rang'], x['canton'], x['nom']))
+    except Exception as e: print('  (conseillers départementaux RNE non exploités :', e, ')')
+    print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI, {len(out.get('cd', []))} conseillers départementaux")
     return out
 def contacts_osm(dep):
     """Objets nommés d'OpenStreetMap portant un téléphone, un courriel ou un site (sites industriels, commerciaux, bureaux, entrepôts, fermes)."""
