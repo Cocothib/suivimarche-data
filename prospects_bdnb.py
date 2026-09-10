@@ -124,6 +124,8 @@ def resume_departement(dep, zpath, out, props, com, permis):
     except Exception as e: print('  (IREP non exploité :', e, ')'); ir = None
     try: pc = bodacc_collectives(dep)
     except Exception as e: print('  (BODACC non exploité :', e, ')'); pc = {}
+    try: bio = bio_departement(dep); rattacher_bio(bio, out)
+    except Exception as e: print('  (Agence Bio non exploitée :', e, ')'); bio = None
     for p in r.get('proprietaires', []):
         if p.get('siren') in pc: p['pc'] = pc[p['siren']]
     if cr is not None:
@@ -165,6 +167,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
     if fr is not None: r['friches'] = {'n': len(fr), 'ha': int(sum((x.get('m2') or 0) for x in fr) / 10000), 'sans_projet': sum(1 for x in fr if 'sans projet' in (x.get('statut') or '') or 'potentielle' in (x.get('statut') or ''))}; r['_friches_complet'] = fr
     if ir is not None: r['irep'] = {'n': len(ir), 'co2_t': int(sum(x['co2_t'] for x in ir)), 'annee': IREP_ANNEE}; r['_irep_complet'] = ir
     r['pc_n'] = len(pc)
+    if bio is not None: r['bio'] = {'n': len(bio), 'tel': sum(1 for x in bio if x['tel']), 'mail': sum(1 for x in bio if x['mail']), 'toiture': sum(1 for x in bio if x.get('kwc')), 'kwc': int(sum(x.get('kwc') or 0 for x in bio))}; r['_bio_complet'] = bio
     if cr is not None:
         if pk: rapprocher_parkings(cr, pk, props)
         pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
@@ -561,6 +564,57 @@ def croiser_beges(dep, out, permis):
     print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
     return rows
 
+
+# ---------------- producteurs bio (Agence Bio, open data) : coordonnées publiées par les opérateurs eux-mêmes ----------------
+AGENCE_BIO_API = 'https://opendata.agencebio.org/api/gouv/operateurs/'
+BIO_DMAX = 100   # m : bâtiment BDNB rattaché à un producteur sans SIREN commun
+def bio_departement(dep):
+    """producteurs engagés en bio du département (activité Production) : nom, gérant, téléphone, courriel, site, adresse, productions"""
+    rows = []; debut = 0
+    while True:
+        url = AGENCE_BIO_API + '?' + urllib.parse.urlencode({'departements': dep, 'nb': 500, 'debut': debut})
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0', 'Accept': 'application/json'}), timeout=180) as r: j = json.load(r)
+        items = j.get('items') or []
+        for x in items:
+            if 'Production' not in {a.get('nom') for a in (x.get('activites') or [])}: continue
+            adrs = x.get('adressesOperateurs') or []
+            adr = next((a for a in adrs if 'Siège social' in (a.get('typeAdresseOperateurs') or [])), None) or (adrs[0] if adrs else {})
+            if str(adr.get('codeCommune') or adr.get('codePostal') or '')[:2] != dep: continue
+            tel = x.get('telephone') or x.get('telephoneNational') or x.get('telephoneCommerciale') or ''
+            site = next((w.get('url') for w in (x.get('siteWebs') or []) if w.get('typeSiteWebId') == 1 and w.get('active', True)), '') or ''
+            rows.append({'id': x.get('id'), 'nom': str(x.get('raisonSociale') or x.get('denominationcourante') or '')[:60], 'siret': str(x.get('siret') or ''), 'siren': str(x.get('siret') or '')[:9],
+                         'gerant': str(x.get('gerant') or '')[:60], 'tel': re.sub(r'\s+', ' ', str(tel)).strip()[:30], 'mail': str(x.get('email') or '').strip()[:80], 'site': str(site)[:120], 'naf': x.get('codeNAF') or '',
+                         'lieu': str(adr.get('lieu') or '')[:60], 'cp': str(adr.get('codePostal') or ''), 'com': str(adr.get('ville') or '')[:40], 'insee': str(adr.get('codeCommune') or ''), 'lat': adr.get('lat'), 'lon': adr.get('long'),
+                         'productions': [str(p.get('nom') or '')[:40] for p in (x.get('productions') or [])[:5]], 'mixite': x.get('mixite') or '', 'depuis': str(x.get('datePremierEngagement') or '')[:10], 'vente': [str(c.get('nom') or '')[:30] for c in (x.get('categories') or [])][:3]})
+        if len(items) < 500: break
+        debut += 500
+    print(f'  Agence Bio : {len(rows):,} producteurs ({sum(1 for r in rows if r["tel"])} téléphones, {sum(1 for r in rows if r["mail"])} courriels, {sum(1 for r in rows if r["site"])} sites)')
+    return rows
+
+def rattacher_bio(bio, out):
+    """toitures BDNB ≥ 400 m² du producteur : par SIREN (propriétaire), sinon bâtiment le plus proche du siège (≤ BIO_DMAX m, murs d'un tiers possible)"""
+    if not bio or out is None or 'lat' not in out.columns: return
+    cols = {c: (c in out.columns) for c in ('batiment_groupe_id', 'lat', 'lon', 'siren', 'proprietaire', 'kwc_potentiel', 'emprise_sol_m2', 'adresse')}
+    g = lambda c, d=None: (out[c] if cols.get(c) else pd.Series([d] * len(out), index=out.index))
+    bats = [{'id': str(b), 'lat': float(la), 'lon': float(lo), 'siren': str(sn or ''), 'prop': str(pn or '')[:60], 'kwc': int(k or 0), 'm2': int(m or 0), 'adr': str(a or '')[:60]}
+            for b, la, lo, sn, pn, k, m, a in zip(g('batiment_groupe_id', ''), out['lat'], out['lon'], g('siren', '').fillna(''), g('proprietaire', '').fillna(''), g('kwc_potentiel', 0).fillna(0), g('emprise_sol_m2', 0).fillna(0), g('adresse', '').fillna(''))
+            if la == la and lo == lo and la is not None]
+    if not bats: return
+    par_siren = {}
+    for b in bats:
+        if b['siren']: par_siren.setdefault(b['siren'], []).append(b)
+    gb = _grille(bats); ns = 0; np_ = 0
+    for x in bio:
+        l = par_siren.get(x['siren']) if x['siren'] else None
+        if l: x['bat_n'] = len(l); x['kwc'] = sum(b['kwc'] for b in l); x['m2'] = sum(b['m2'] for b in l); x['bat_via'] = 'siren'; ns += 1; continue
+        if x.get('lat') and x.get('lon'):
+            pr = _proches(gb, bats, float(x['lat']), float(x['lon']), BIO_DMAX)
+            if pr:
+                d_, i = pr[0]; b = bats[i]; x['bat_n'] = 1; x['kwc'] = b['kwc']; x['m2'] = b['m2']; x['bat_via'] = 'proximite'; x['d'] = int(d_); x['bat_adr'] = b['adr']
+                if b['siren'] and b['siren'] != x['siren']: x['prop'] = b['prop']; x['prop_siren'] = b['siren']
+                np_ += 1
+    print(f'  Producteurs bio avec toiture BDNB : {ns:,} par SIREN, {np_:,} par proximité (≤ {BIO_DMAX} m)')
+
 # ---------------- parkings extérieurs (OpenStreetMap) : obligation d'ombrières, loi APER art. 40 ----------------
 OVERPASS = ('https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter')   # kumi.systems et private.coffee répondent 504 sur les requêtes par area
 PARKING_MIN = 1500          # m² : seuil de l'obligation d'ombrières (loi APER)
@@ -749,6 +803,11 @@ def ecrire_relais(path, dep, r):
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'source': meta, 'donnees': val}, f, ensure_ascii=False, separators=(',', ':'))
             print(f'  → {dossier}/{dep}.json')
+    bio = r.pop('_bio_complet', None)
+    if bio is not None:   # producteurs bio : publié dans contacts/ (dossier déjà versionné) sous le nom bio-<dep>.json
+        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'contacts'); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, 'bio-' + dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'n': len(bio), 'dmax_m': BIO_DMAX, 'source': 'producteurs engagés en agriculture biologique : annuaire des opérateurs de l’Agence Bio (open data, coordonnées publiées par les opérateurs) ; toitures BDNB ≥ 400 m² rattachées par SIREN ou à moins de 100 m du siège', 'donnees': bio}, f, ensure_ascii=False, separators=(',', ':'))
+        print(f'  → contacts/bio-{dep}.json : {len(bio):,} producteurs')
     ens = r.pop('_enseignes_complet', None)
     if ens is not None:   # enseignes sous marque : publié dans parkings/ (dossier déjà versionné par le workflow) sous le nom enseignes-<dep>.json
         d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
