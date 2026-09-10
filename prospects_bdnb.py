@@ -331,6 +331,7 @@ def finess_departement(dep, dossier):
             rows.append({'finess': c[1], 'nom': (c[4] or c[3])[:70], 'com': c[15].split(' ', 1)[1] if ' ' in c[15] else c[15], 'cp': c[15].split(' ')[0], 'insee': (dep + c[12]) if c[12] else '', 'tel': c[16], 'siret': c[22], 'cat': cat[:50], 'ej': c[2]})
     print(f'  FINESS : {len(rows):,} établissements avec téléphone')
     return rows
+COG_COMMUNES_URL = 'https://www.insee.fr/fr/statistiques/fichier/8377162/v_commune_2025.csv'   # code officiel géographique INSEE : commune → canton (millésime à suivre chaque année)
 def elus_departement(dep, dossier):
     """Maires par commune, présidents d'intercommunalité et conseillers départementaux (répertoire national des élus)."""
     import csv
@@ -361,6 +362,28 @@ def elus_departement(dep, dossier):
                 out['cd'].append({'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'canton': r.get('Libellé du canton') or '', 'code_canton': r.get('Code du canton') or '', 'fonction': fo, 'rang': int(m.group(1)) if m else (0 if fo.lower().startswith('président') else 99), 'depuis': r.get('Date de début de la fonction') or r.get('Date de début du mandat') or ''})
         out['cd'].sort(key=lambda x: (x['rang'], x['canton'], x['nom']))
     except Exception as e: print('  (conseillers départementaux RNE non exploités :', e, ')')
+    # canton de chaque commune (COG INSEE) → conseillers du canton dans la fiche d'une commune ; les villes découpées en plusieurs
+    # cantons portent un pseudo-code dans le COG (Lille 5997) : on les rattache par le libellé des cantons du RNE (« Lille-1 »… « Lille-6 »)
+    out['cantons'] = {}
+    try:
+        if out['cd']:
+            import unicodedata
+            nrm = lambda s: unicodedata.normalize('NFKD', str(s or '')).encode('ascii', 'ignore').decode().lower().strip()
+            codes = {x['code_canton'] for x in out['cd'] if x['code_canton']}
+            par_lib = {}
+            for x in out['cd']:
+                m = re.match(r'^(.*?)(?:-\d+)?$', nrm(x['canton'])); par_lib.setdefault(m.group(1), set()).add(x['code_canton'])
+            f = _fichier(COG_COMMUNES_URL, dossier, 'cog_communes.csv')
+            with open(f, encoding='utf-8-sig', newline='') as fh:
+                for r in csv.DictReader(fh):
+                    if r.get('TYPECOM') != 'COM' or r.get('DEP') != dep: continue
+                    can = r.get('CAN') or ''
+                    if can in codes: out['cantons'][r['COM']] = [can]
+                    else:
+                        l = par_lib.get(nrm(r.get('LIBELLE')))
+                        if l: out['cantons'][r['COM']] = sorted(l)
+            print(f"  Cantons COG : {len(out['cantons']):,} communes rattachées à leurs conseillers départementaux")
+    except Exception as e: print('  (cantons des communes non exploités :', e, ')')
     print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI, {len(out.get('cd', []))} conseillers départementaux")
     return out
 def contacts_osm(dep):
