@@ -505,10 +505,10 @@ def croiser_beges(dep, out, permis):
             if cl: e['dpe'][cl] = e['dpe'].get(cl, 0) + 1
             if ch: k = 'gaz' if 'gaz' in ch.lower() else 'fioul' if 'fioul' in ch.lower() else 'électricité' if 'lectri' in ch.lower() else 'réseau' if 'seau' in ch.lower() else 'bois' if 'bois' in ch.lower() else 'autre'; e['dpe_chauf'][k] = e['dpe_chauf'].get(k, 0) + 1
         # sites par commune, avec la position de chaque bâtiment (mini-carte de la fiche prospect : bâtiments BDNB sur photo aérienne)
-        for com_, ins, kwc_, la, lo, adr, em in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0)):
+        for com_, ins, kwc_, la, lo, adr, em, cp in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0), num(g['corps']).fillna(1) if 'corps' in g.columns else [1] * len(g)):
             st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': '', 'bats': []})
             st['n'] += 1; st['kwc'] += int(kwc_); st['adr'] = st['adr'] or adr[:60]
-            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo); st['bats'].append({'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]})
+            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo); b_ = {'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]}; (int(cp) > 1) and b_.update({'corps': int(cp)}); st['bats'].append(b_)
         e['bat_ids'].extend(list(g['batiment_groupe_id']))
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
@@ -946,22 +946,32 @@ def traiter(zpath, sit_path, relais=None, excel=True):
 
     # 9. position des bâtiments retenus : premier anneau de la géométrie (Lambert-93) → centroïde → WGS84 ; lu par morceaux pour ne garder que les candidats
     try:
-        ids = set(cand['batiment_groupe_id']); pos = {}
+        ids = set(cand['batiment_groupe_id']); pos = {}; parts = {}
         with z.open('csv/batiment_groupe.csv') as f:
             for chunk in pd.read_csv(io.TextIOWrapper(f, encoding='utf-8'), sep=';', usecols=['batiment_groupe_id', 'geom_groupe'], dtype=str, chunksize=200000):
                 ch = chunk[chunk['batiment_groupe_id'].isin(ids)]
                 for bid, g in zip(ch['batiment_groupe_id'], ch['geom_groupe'].fillna('')):
-                    m = re.search(r'\(\(([^()]+)\)', g)
-                    if not m: continue
-                    pts = [tuple(map(float, q.split()[:2])) for q in m.group(1).split(',') if len(q.split()) >= 2]
-                    if not pts: continue
-                    x = sum(q[0] for q in pts) / len(pts); y = sum(q[1] for q in pts) / len(pts); pos[bid] = lambert93_vers_wgs84(x, y)
+                    # un groupe peut être un MULTIPOLYGON (plusieurs corps de bâtiment) : le repère est le centroïde (formule des trapèzes) du plus grand
+                    # anneau extérieur, et non la moyenne des sommets du premier polygone, qui plaçait l'emprise totale sur une annexe (Alstom Petite-Forêt)
+                    meilleur = None
+                    for ring in re.findall(r'\(\(([^()]+)\)', g):
+                        pts = [tuple(map(float, q.split()[:2])) for q in ring.split(',') if len(q.split()) >= 2]
+                        if len(pts) < 3: continue
+                        a2 = 0.0; cx = 0.0; cy = 0.0
+                        for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
+                            w = x0 * y1 - x1 * y0; a2 += w; cx += (x0 + x1) * w; cy += (y0 + y1) * w
+                        if abs(a2) < 1e-6: continue
+                        aire = abs(a2) / 2; c = (cx / (3 * a2), cy / (3 * a2))
+                        if meilleur is None or aire > meilleur[0]: meilleur = (aire, c, len(re.findall(r'\(\(', g)))
+                    if meilleur is None: continue
+                    pos[bid] = lambert93_vers_wgs84(*meilleur[1]); parts[bid] = meilleur[2]
         cand['lat'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][0], 5) if b in pos else None); cand['lon'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][1], 5) if b in pos else None)
+        cand['corps'] = cand['batiment_groupe_id'].map(lambda b: parts.get(b, 1))
         print(f'  Positions : {len(pos):,} bâtiments géolocalisés')
     except Exception as e:
-        print('  (géométrie non exploitée :', e, ')'); cand['lat'] = None; cand['lon'] = None
+        print('  (géométrie non exploitée :', e, ')'); cand['lat'] = None; cand['lon'] = None; cand['corps'] = 1
 
-    cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
+    cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'corps', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
             'kwc_potentiel', 'production_mwh', 'conso_pro_mwh', 'annee_conso', 'nb_pdl_pro', 'couverture_conso_pct', 'pdl_hta', 'contrainte', 'dist_monument_m',
             'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'parcelle_id', 'parcelle_m2', 'conso_gaz_mwh', 'annee_gaz', 'dpe_classe', 'dpe_ges', 'dpe_kwh_m2', 'dpe_chauffage', 'dpe_surface_m2', 'dpe_date', 'lat', 'lon', 'code_commune_insee', 'batiment_groupe_id']
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
