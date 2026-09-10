@@ -504,10 +504,11 @@ def croiser_beges(dep, out, permis):
         for cl, ch in zip(g['dpe_classe'].fillna(''), g['dpe_chauffage'].fillna('')):
             if cl: e['dpe'][cl] = e['dpe'].get(cl, 0) + 1
             if ch: k = 'gaz' if 'gaz' in ch.lower() else 'fioul' if 'fioul' in ch.lower() else 'électricité' if 'lectri' in ch.lower() else 'réseau' if 'seau' in ch.lower() else 'bois' if 'bois' in ch.lower() else 'autre'; e['dpe_chauf'][k] = e['dpe_chauf'].get(k, 0) + 1
-        for com_, ins, kwc_, la, lo, adr in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna('')):
-            st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': ''})
+        # sites par commune, avec la position de chaque bâtiment (mini-carte de la fiche prospect : bâtiments BDNB sur photo aérienne)
+        for com_, ins, kwc_, la, lo, adr, em in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0)):
+            st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': '', 'bats': []})
             st['n'] += 1; st['kwc'] += int(kwc_); st['adr'] = st['adr'] or adr[:60]
-            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo)
+            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo); st['bats'].append({'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]})
         e['bat_ids'].extend(list(g['batiment_groupe_id']))
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
@@ -519,7 +520,7 @@ def croiser_beges(dep, out, permis):
     rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
     for e in rows:
         e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
-        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
+        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None, 'bats': sorted(v['bats'], key=lambda x: -x['kwc'])[:12]} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
         if not e['dpe']: e.pop('dpe'); e.pop('dpe_chauf')
     for e in agg.values():
         if e not in rows: e.pop('bat_ids', None)
