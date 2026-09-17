@@ -7,6 +7,7 @@ Dépôt public alimenté chaque matin par GitHub Actions (`relais.py`, biblioth�
 | `spot.json` | prix spot day-ahead France par mois depuis 2015 (prix moyen, prix 11 h-15 h, **prix capté solaire** pondéré par la production solaire nationale, heures à prix négatif, min/max, profil horaire) et par jour sur 92 jours | [energy-charts.info](https://energy-charts.info) (Fraunhofer ISE, données ENTSO-E / EPEX), CC BY 4.0 |
 | `jorf.json` | textes du Journal officiel des 24 derniers mois dont le titre concerne le solaire, l'autoconsommation ou l'électricité renouvelable (`tag` = `pv` ou `energie`), avec lien Légifrance `https://www.legifrance.gouv.fr/jorf/id/<id>` | [DILA, open data JORF](https://echanges.dila.gouv.fr/OPENDATA/JORF/), licence ouverte |
 | `etat.json` | horodatages, dernière archive JORF traitée, erreurs éventuelles | |
+| `naf.json` | nomenclature d'activités NAF rév. 2 (2008) : 21 sections, 88 divisions (avec leur section), 272 groupes, 732 sous-classes `[code, libellé]` — fichier statique lu par l'onglet « Par activité » des comptes clés de SuiviMarché (recherche d'entreprises par code APE) | [INSEE, listes NAF rév. 2](https://www.insee.fr/fr/information/2120875) |
 
 ## Fonctionnement
 
