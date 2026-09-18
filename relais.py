@@ -300,9 +300,8 @@ def jorf():
     log(f'jorf : {lus} textes lus, {retenus} retenus dans cette passe, {len(liste)} conservés')
     ecrit_json('jorf.json', {'maj': now.isoformat(timespec='seconds'), 'source': 'DILA, open data JORF (echanges.dila.gouv.fr), licence ouverte',
                              'depuis': seuil, 'n': len(liste), 'textes': liste})
-    etat['jorf_dernier'] = dernier
-    etat['jorf_maj'] = now.isoformat(timespec='seconds')
-    return etat
+    # ne renvoyer que les clés JORF : etat.json a été relu ici, le renvoyer entier écraserait spot_maj (bug jusqu'au 18/09/2026)
+    return {'jorf_dernier': dernier, 'jorf_maj': now.isoformat(timespec='seconds')}
 
 
 if __name__ == '__main__':

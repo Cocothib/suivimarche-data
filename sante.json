@@ -1,0 +1,243 @@
+{
+ "maj": "2026-09-18T13:50:16+00:00",
+ "n": 26,
+ "n_ko": 0,
+ "n_partiel": 1,
+ "res": {
+  "odre": {
+   "lbl": "Registre national des installations (ODRÉ)",
+   "url": "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets/registre-national-installation-production-stockage-electricite-agrege/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 1707,
+   "msg": "HTTP 200",
+   "vital": true
+  },
+  "enedis": {
+   "lbl": "Open data Enedis",
+   "url": "https://opendata.enedis.fr/api/explore/v2.1/catalog/datasets/parc-des-installations-de-production-raccordees-par-departement/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 606,
+   "msg": "HTTP 200",
+   "vital": true
+  },
+  "eco": {
+   "lbl": "éCO2mix régional (RTE)",
+   "url": "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets/eco2mix-regional-cons-def/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 258,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "parcReg": {
+   "lbl": "Parc régional annuel (RTE)",
+   "url": "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets/parc-regional-annuel-prod-eolien-solaire/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 361,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "dido": {
+   "lbl": "DiDo / Sitadel (SDES)",
+   "url": "https://data.statistiques.developpement-durable.gouv.fr/dido/api/v1/datafiles/f8f0700f-806c-40a7-83b1-f21cf507e7c4",
+   "ok": true,
+   "code": 200,
+   "ms": 893,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "entApi": {
+   "lbl": "Recherche d’entreprises (Sirene)",
+   "url": "https://recherche-entreprises.api.gouv.fr/search?q=agriwatt&per_page=1",
+   "ok": true,
+   "code": 200,
+   "ms": 486,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "begesApi": {
+   "lbl": "Bilans GES (ADEME)",
+   "url": "https://data.ademe.fr/data-fair/api/v1/datasets/bilan-ges/lines?size=1",
+   "ok": true,
+   "code": 200,
+   "ms": 188,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "rgeApi": {
+   "lbl": "Entreprises RGE (ADEME)",
+   "url": "https://data.ademe.fr/data-fair/api/v1/datasets/liste-des-entreprises-rge-2/lines?size=1",
+   "ok": true,
+   "code": 200,
+   "ms": 1442,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "aidesApi": {
+   "lbl": "Aides de l’ADEME",
+   "url": "https://data.ademe.fr/data-fair/api/v1/datasets/les-aides-financieres-de-l%27ademe/lines?size=1",
+   "ok": true,
+   "code": 200,
+   "ms": 955,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "annuaireApi": {
+   "lbl": "Annuaire de l’administration",
+   "url": "https://api-lannuaire.service-public.fr/api/explore/v2.1/catalog/datasets/api-lannuaire-administration/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 783,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "educApi": {
+   "lbl": "Annuaire de l’éducation",
+   "url": "https://data.education.gouv.fr/api/explore/v2.1/catalog/datasets/fr-en-annuaire-education/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 794,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "bodaccApi": {
+   "lbl": "BODACC",
+   "url": "https://bodacc-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/annonces-commerciales/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 694,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "boampApi": {
+   "lbl": "BOAMP",
+   "url": "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 539,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "decpApi": {
+   "lbl": "DECP",
+   "url": "https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/decp-2022-marches-valides/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 698,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "dataEsApi": {
+   "lbl": "Équipements sportifs (Data ES)",
+   "url": "https://equipements.sports.gouv.fr/api/explore/v2.1/catalog/datasets/data-es/records?limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 557,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "wikidata": {
+   "lbl": "Wikidata",
+   "url": "https://www.wikidata.org/w/api.php?action=wbsearchentities&search=Agriwatt&language=fr&format=json&limit=1",
+   "ok": true,
+   "code": 200,
+   "ms": 1086,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "overpass": {
+   "lbl": "Overpass (OpenStreetMap)",
+   "url": "https://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B",
+   "ok": true,
+   "code": 200,
+   "ms": 2493,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "overpass2": {
+   "lbl": "Overpass, miroir de secours (maps.mail.ru)",
+   "url": "https://maps.mail.ru/osm/tools/overpass/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B",
+   "ok": "partiel",
+   "code": 504,
+   "ms": 547,
+   "msg": "en défaut, mais le miroir répond : HTTP 504 : page HTML",
+   "vital": false,
+   "essais": 2
+  },
+  "ign": {
+   "lbl": "Photos aériennes IGN (Géoplateforme)",
+   "url": "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=6&TILEROW=22&TILECOL=32&FORMAT=image%2Fjpeg",
+   "ok": true,
+   "code": 200,
+   "ms": 1664,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "bdnbS3": {
+   "lbl": "Exports BDNB (CSTB)",
+   "url": "https://open-data.s3.fr-par.scw.cloud/bdnb_millesime_2026-02-a/millesime_2026-02-a_dep90/open_data_millesime_2026-02-a_dep90_csv.zip",
+   "ok": true,
+   "code": 200,
+   "ms": 1797,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "spot": {
+   "lbl": "Prix spot (energy-charts)",
+   "url": "https://api.energy-charts.info/price?bzn=FR&start=2026-09-17&end=2026-09-17",
+   "ok": true,
+   "code": 200,
+   "ms": 1000,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "dila": {
+   "lbl": "Journal officiel (open data DILA)",
+   "url": "https://echanges.dila.gouv.fr/OPENDATA/JORF/",
+   "ok": true,
+   "code": 200,
+   "ms": 723,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "geoapi": {
+   "lbl": "Contours des communes (geo.api.gouv.fr)",
+   "url": "https://geo.api.gouv.fr/departements/59/communes?fields=code&format=json",
+   "ok": true,
+   "code": 200,
+   "ms": 1276,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "georisques": {
+   "lbl": "Installations classées (Géorisques)",
+   "url": "https://georisques.gouv.fr/api/v1/installations_classees?departement=59&page_size=1&page=1",
+   "ok": true,
+   "code": 200,
+   "ms": 1193,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "datagouv": {
+   "lbl": "data.gouv.fr (friches, IREP, FINESS, élus)",
+   "url": "https://www.data.gouv.fr/api/1/datasets/?q=finess&page_size=1",
+   "ok": true,
+   "code": 200,
+   "ms": 84,
+   "msg": "HTTP 200",
+   "vital": false
+  },
+  "agencebio": {
+   "lbl": "Agence Bio (annuaire des opérateurs)",
+   "url": "https://opendata.agencebio.org/api/gouv/operateurs/?departement=59&nb=1",
+   "ok": true,
+   "code": 200,
+   "ms": 555,
+   "msg": "HTTP 200",
+   "vital": false
+  }
+ }
+}

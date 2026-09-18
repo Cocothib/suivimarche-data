@@ -1,0 +1,43 @@
+name: sante
+
+# État des sources de SuiviMarché vu depuis GitHub : une requête minimale par API, chaque matin.
+# Le run échoue quand une source ne répond pas (après un second essai) : GitHub envoie alors
+# un courriel « Run failed » au propriétaire du dépôt. sante.json est publié dans tous les cas
+# et lu par l'application (Paramètres › Sources et cache, colonne « Vu du relais »).
+
+on:
+  schedule:
+    - cron: '10 6 * * *'   # tous les jours à 06:10 UTC (08:10 Paris en été)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sante
+  cancel-in-progress: false
+
+jobs:
+  sante:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Sondes
+        id: sondes
+        continue-on-error: true
+        run: python sante.py
+      - name: Publication
+        run: |
+          git config user.name 'relais-bot'
+          git config user.email 'relais-bot@users.noreply.github.com'
+          git add sante.json
+          if git diff --cached --quiet; then echo 'Aucun changement'; else git commit -m "Santé des sources du $(date -u +%F)" && git pull --rebase && git push; fi
+      - name: Sources en défaut
+        if: steps.sondes.outcome == 'failure'
+        run: |
+          python -c "import json; d=json.load(open('sante.json')); [print('EN DEFAUT :', k, '-', r['lbl'], '-', r['msg']) for k, r in d['res'].items() if r['ok'] is False]"
+          exit 1
