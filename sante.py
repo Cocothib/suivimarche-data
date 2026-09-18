@@ -41,7 +41,9 @@ SONDES = [
     ('dataEsApi', 'Équipements sportifs (Data ES)', 'https://equipements.sports.gouv.fr/api/explore/v2.1/catalog/datasets/data-es/records?limit=1', 'json', False),
     ('wikidata', 'Wikidata', 'https://www.wikidata.org/w/api.php?action=wbsearchentities&search=Agriwatt&language=fr&format=json&limit=1', 'json', False),
     ('overpass', 'Overpass (OpenStreetMap)', 'https://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
-    ('overpass2', 'Overpass, miroir de secours (maps.mail.ru)', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
+    ('overpass2', 'Overpass, serveur z (overpass-api.de)', 'https://z.overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
+    ('overpass3', 'Overpass, serveur lz4 (overpass-api.de)', 'https://lz4.overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
+    ('overpass4', 'Overpass, miroir de secours (maps.mail.ru)', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
     ('ign', 'Photos aériennes IGN (Géoplateforme)', 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=6&TILEROW=22&TILECOL=32&FORMAT=image%2Fjpeg', 'get', False),
     ('bdnbS3', 'Exports BDNB (CSTB)', 'https://open-data.s3.fr-par.scw.cloud/bdnb_millesime_{m}/millesime_{m}_dep90/open_data_millesime_{m}_dep90_csv.zip', 'head', False),
     # sources propres au relais (relais.py, prospects_bdnb.py)
@@ -115,11 +117,13 @@ if __name__ == '__main__':
         for k, r in map(sonder, encore):
             r['essais'] = 2
             res[k] = r
-    # le miroir Overpass compense le serveur principal : défaut de l'un seul = à surveiller
-    for a, b in (('overpass', 'overpass2'), ('overpass2', 'overpass')):
-        if res[a]['ok'] is False and res[b]['ok'] is True:
-            res[a]['ok'] = 'partiel'
-            res[a]['msg'] = 'en défaut, mais le miroir répond : ' + res[a]['msg']
+    # les serveurs Overpass se compensent (504 aléatoires) : défaut d'un seul = à surveiller, défaut de tous = en défaut
+    ovp = [k for k in res if k.startswith('overpass')]
+    if any(res[k]['ok'] is True for k in ovp):
+        for k in ovp:
+            if res[k]['ok'] is False:
+                res[k]['ok'] = 'partiel'
+                res[k]['msg'] = 'en défaut, mais un autre serveur Overpass répond : ' + res[k]['msg']
     ko = [k for k, r in res.items() if r['ok'] is not True]
     for k, r in res.items():
         print('%-12s %-8s %6d ms  %s' % (k, 'OK' if r['ok'] is True else ('PARTIEL' if r['ok'] == 'partiel' else 'KO'), r['ms'], r['msg']))
