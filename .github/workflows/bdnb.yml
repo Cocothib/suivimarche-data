@@ -106,7 +106,7 @@ jobs:
                 notre=$(git rev-parse HEAD); git show "$notre:bdnb.json" > /tmp/bdnb/notre_bdnb.json
                 git fetch -q origin main && git show origin/main:bdnb.json > /tmp/bdnb/distant_bdnb.json
                 git reset -q --hard origin/main
-                for f in parkings/$d.json parkings/enseignes-$d.json solaire/$d.json icpe/$d.json contacts/$d.json friches/$d.json irep/$d.json; do git cat-file -e "$notre:$f" 2>/dev/null && git checkout -q "$notre" -- "$f"; done
+                for f in parkings/$d.json enseignes/$d.json solaire/$d.json icpe/$d.json contacts/$d.json friches/$d.json irep/$d.json; do git cat-file -e "$notre:$f" 2>/dev/null && git checkout -q "$notre" -- "$f"; done
                 if python - "$d" <<'PYEOF'
           import json, sys
           d = sys.argv[1]
@@ -118,7 +118,7 @@ jobs:
           print('bdnb.json fusionne : departement', d, 'reinjecte dans la version distante')
           PYEOF
                 then
-                  git add -- bdnb.json $(for x in parkings solaire icpe contacts friches irep; do [ -d "$x" ] && echo "$x"; done)
+                  git add -- bdnb.json $(for x in parkings solaire icpe contacts friches irep enseignes; do [ -d "$x" ] && echo "$x"; done)
                   git commit -q -m "BDNB $d ($MILLESIME)" || true
                 else
                   echo "fusion de bdnb.json impossible pour $d"; return 1
@@ -132,7 +132,7 @@ jobs:
           for d in ${{ steps.liste.outputs.deps }}; do
             echo "=== Département $d ($MILLESIME) ==="
             if python prospects_bdnb.py "$d" --telecharger --millesime "$MILLESIME" --dossier /tmp/bdnb --relais bdnb.json --sans-excel --nettoyer; then
-              git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/
+              git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/
               if git diff --cached --quiet; then echo "Aucun changement"; else
                 git commit -q -m "BDNB $d ($MILLESIME)"
                 publier "$d" || echo "Département $d calculé mais non publié"
@@ -149,7 +149,7 @@ jobs:
         run: |
           git config user.name 'relais-bot'
           git config user.email 'relais-bot@users.noreply.github.com'
-          git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/
+          git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/
           if git diff --cached --quiet; then echo 'Rien à publier'; else
             git commit -q -m "BDNB : vérification du millésime ($(date -u +%F))"
             for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break || { echo "push refusé, nouvel essai $i"; git rebase --abort 2>/dev/null || true; sleep 30; }; done
