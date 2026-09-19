@@ -124,8 +124,6 @@ def resume_departement(dep, zpath, out, props, com, permis):
     except Exception as e: print('  (IREP non exploité :', e, ')'); ir = None
     try: pc = bodacc_collectives(dep)
     except Exception as e: print('  (BODACC non exploité :', e, ')'); pc = {}
-    try: bio = bio_departement(dep); rattacher_bio(bio, out)
-    except Exception as e: print('  (Agence Bio non exploitée :', e, ')'); bio = None
     for p in r.get('proprietaires', []):
         if p.get('siren') in pc: p['pc'] = pc[p['siren']]
     if cr is not None:
@@ -167,7 +165,6 @@ def resume_departement(dep, zpath, out, props, com, permis):
     if fr is not None: r['friches'] = {'n': len(fr), 'ha': int(sum((x.get('m2') or 0) for x in fr) / 10000), 'sans_projet': sum(1 for x in fr if 'sans projet' in (x.get('statut') or '') or 'potentielle' in (x.get('statut') or ''))}; r['_friches_complet'] = fr
     if ir is not None: r['irep'] = {'n': len(ir), 'co2_t': int(sum(x['co2_t'] for x in ir)), 'annee': IREP_ANNEE}; r['_irep_complet'] = ir
     r['pc_n'] = len(pc)
-    if bio is not None: r['bio'] = {'n': len(bio), 'tel': sum(1 for x in bio if x['tel']), 'mail': sum(1 for x in bio if x['mail']), 'toiture': sum(1 for x in bio if x.get('kwc')), 'kwc': int(sum(x.get('kwc') or 0 for x in bio))}; r['_bio_complet'] = bio
     if cr is not None:
         if pk: rapprocher_parkings(cr, pk, props)
         pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
@@ -334,9 +331,8 @@ def finess_departement(dep, dossier):
             rows.append({'finess': c[1], 'nom': (c[4] or c[3])[:70], 'com': c[15].split(' ', 1)[1] if ' ' in c[15] else c[15], 'cp': c[15].split(' ')[0], 'insee': (dep + c[12]) if c[12] else '', 'tel': c[16], 'siret': c[22], 'cat': cat[:50], 'ej': c[2]})
     print(f'  FINESS : {len(rows):,} établissements avec téléphone')
     return rows
-COG_COMMUNES_URL = 'https://www.insee.fr/fr/statistiques/fichier/8377162/v_commune_2025.csv'   # code officiel géographique INSEE : commune → canton (millésime à suivre chaque année)
 def elus_departement(dep, dossier):
-    """Maires par commune, présidents d'intercommunalité et conseillers départementaux (répertoire national des élus)."""
+    """Maires par commune et présidents d'intercommunalité (répertoire national des élus)."""
     import csv
     out = {'maires': {}, 'epci': {}}
     try:
@@ -354,40 +350,7 @@ def elus_departement(dep, dossier):
                 if r.get('Code du département') != dep or not fo.startswith('président'): continue
                 out['epci'][r['N° SIREN']] = {'epci': r["Libellé de l'EPCI"], 'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'com': r['Libellé de la commune de rattachement'], 'depuis': r.get('Date de début de la fonction') or ''}
     except Exception as e: print('  (présidents EPCI non exploités :', e, ')')
-    # conseillers départementaux : président, vice-présidents (rang) et conseillers par canton (fiche des Départements, comptes clés publics)
-    out['cd'] = []
-    try:
-        f = _fichier(_ressource('repertoire-national-des-elus-1', 'elus-conseillers-departementaux'), dossier, 'elus-cd.csv')
-        with open(f, encoding='utf-8', newline='') as fh:
-            for r in csv.DictReader(fh, delimiter=';'):
-                if r.get('Code du département') != dep: continue
-                fo = r.get('Libellé de la fonction') or ''; m = re.match(r'(\d+)(?:er|ère|ème)?\s+Vice', fo, re.I)
-                out['cd'].append({'nom': r["Nom de l'élu"], 'prenom': r["Prénom de l'élu"], 'canton': r.get('Libellé du canton') or '', 'code_canton': r.get('Code du canton') or '', 'fonction': fo, 'rang': int(m.group(1)) if m else (0 if fo.lower().startswith('président') else 99), 'depuis': r.get('Date de début de la fonction') or r.get('Date de début du mandat') or ''})
-        out['cd'].sort(key=lambda x: (x['rang'], x['canton'], x['nom']))
-    except Exception as e: print('  (conseillers départementaux RNE non exploités :', e, ')')
-    # canton de chaque commune (COG INSEE) → conseillers du canton dans la fiche d'une commune ; les villes découpées en plusieurs
-    # cantons portent un pseudo-code dans le COG (Lille 5997) : on les rattache par le libellé des cantons du RNE (« Lille-1 »… « Lille-6 »)
-    out['cantons'] = {}
-    try:
-        if out['cd']:
-            import unicodedata
-            nrm = lambda s: unicodedata.normalize('NFKD', str(s or '')).encode('ascii', 'ignore').decode().lower().strip()
-            codes = {x['code_canton'] for x in out['cd'] if x['code_canton']}
-            par_lib = {}
-            for x in out['cd']:
-                m = re.match(r'^(.*?)(?:-\d+)?$', nrm(x['canton'])); par_lib.setdefault(m.group(1), set()).add(x['code_canton'])
-            f = _fichier(COG_COMMUNES_URL, dossier, 'cog_communes.csv')
-            with open(f, encoding='utf-8-sig', newline='') as fh:
-                for r in csv.DictReader(fh):
-                    if r.get('TYPECOM') != 'COM' or r.get('DEP') != dep: continue
-                    can = r.get('CAN') or ''
-                    if can in codes: out['cantons'][r['COM']] = [can]
-                    else:
-                        l = par_lib.get(nrm(r.get('LIBELLE')))
-                        if l: out['cantons'][r['COM']] = sorted(l)
-            print(f"  Cantons COG : {len(out['cantons']):,} communes rattachées à leurs conseillers départementaux")
-    except Exception as e: print('  (cantons des communes non exploités :', e, ')')
-    print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI, {len(out.get('cd', []))} conseillers départementaux")
+    print(f"  Élus RNE : {len(out['maires']):,} maires, {len(out['epci'])} présidents d'EPCI")
     return out
 def contacts_osm(dep):
     """Objets nommés d'OpenStreetMap portant un téléphone, un courriel ou un site (sites industriels, commerciaux, bureaux, entrepôts, fermes)."""
@@ -541,11 +504,10 @@ def croiser_beges(dep, out, permis):
         for cl, ch in zip(g['dpe_classe'].fillna(''), g['dpe_chauffage'].fillna('')):
             if cl: e['dpe'][cl] = e['dpe'].get(cl, 0) + 1
             if ch: k = 'gaz' if 'gaz' in ch.lower() else 'fioul' if 'fioul' in ch.lower() else 'électricité' if 'lectri' in ch.lower() else 'réseau' if 'seau' in ch.lower() else 'bois' if 'bois' in ch.lower() else 'autre'; e['dpe_chauf'][k] = e['dpe_chauf'].get(k, 0) + 1
-        # sites par commune, avec la position de chaque bâtiment (mini-carte de la fiche prospect : bâtiments BDNB sur photo aérienne)
-        for com_, ins, kwc_, la, lo, adr, em, cp in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0), num(g['corps']).fillna(1) if 'corps' in g.columns else [1] * len(g)):
-            st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': '', 'bats': []})
+        for com_, ins, kwc_, la, lo, adr in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna('')):
+            st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': ''})
             st['n'] += 1; st['kwc'] += int(kwc_); st['adr'] = st['adr'] or adr[:60]
-            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo); b_ = {'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]}; (int(cp) > 1) and b_.update({'corps': int(cp)}); st['bats'].append(b_)
+            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo)
         e['bat_ids'].extend(list(g['batiment_groupe_id']))
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
@@ -557,63 +519,12 @@ def croiser_beges(dep, out, permis):
     rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
     for e in rows:
         e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
-        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None, 'bats': sorted(v['bats'], key=lambda x: -x['kwc'])[:12]} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
+        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
         if not e['dpe']: e.pop('dpe'); e.pop('dpe_chauf')
     for e in agg.values():
         if e not in rows: e.pop('bat_ids', None)
     print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
     return rows
-
-
-# ---------------- producteurs bio (Agence Bio, open data) : coordonnées publiées par les opérateurs eux-mêmes ----------------
-AGENCE_BIO_API = 'https://opendata.agencebio.org/api/gouv/operateurs/'
-BIO_DMAX = 100   # m : bâtiment BDNB rattaché à un producteur sans SIREN commun
-def bio_departement(dep):
-    """producteurs engagés en bio du département (activité Production) : nom, gérant, téléphone, courriel, site, adresse, productions"""
-    rows = []; debut = 0
-    while True:
-        url = AGENCE_BIO_API + '?' + urllib.parse.urlencode({'departements': dep, 'nb': 500, 'debut': debut})
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0', 'Accept': 'application/json'}), timeout=180) as r: j = json.load(r)
-        items = j.get('items') or []
-        for x in items:
-            if 'Production' not in {a.get('nom') for a in (x.get('activites') or [])}: continue
-            adrs = x.get('adressesOperateurs') or []
-            adr = next((a for a in adrs if 'Siège social' in (a.get('typeAdresseOperateurs') or [])), None) or (adrs[0] if adrs else {})
-            if str(adr.get('codeCommune') or adr.get('codePostal') or '')[:2] != dep: continue
-            tel = x.get('telephone') or x.get('telephoneNational') or x.get('telephoneCommerciale') or ''
-            site = next((w.get('url') for w in (x.get('siteWebs') or []) if w.get('typeSiteWebId') == 1 and w.get('active', True)), '') or ''
-            rows.append({'id': x.get('id'), 'nom': str(x.get('raisonSociale') or x.get('denominationcourante') or '')[:60], 'siret': str(x.get('siret') or ''), 'siren': str(x.get('siret') or '')[:9],
-                         'gerant': str(x.get('gerant') or '')[:60], 'tel': re.sub(r'\s+', ' ', str(tel)).strip()[:30], 'mail': str(x.get('email') or '').strip()[:80], 'site': str(site)[:120], 'naf': x.get('codeNAF') or '',
-                         'lieu': str(adr.get('lieu') or '')[:60], 'cp': str(adr.get('codePostal') or ''), 'com': str(adr.get('ville') or '')[:40], 'insee': str(adr.get('codeCommune') or ''), 'lat': adr.get('lat'), 'lon': adr.get('long'),
-                         'productions': [str(p.get('nom') or '')[:40] for p in (x.get('productions') or [])[:5]], 'mixite': x.get('mixite') or '', 'depuis': str(x.get('datePremierEngagement') or '')[:10], 'vente': [str(c.get('nom') or '')[:30] for c in (x.get('categories') or [])][:3]})
-        if len(items) < 500: break
-        debut += 500
-    print(f'  Agence Bio : {len(rows):,} producteurs ({sum(1 for r in rows if r["tel"])} téléphones, {sum(1 for r in rows if r["mail"])} courriels, {sum(1 for r in rows if r["site"])} sites)')
-    return rows
-
-def rattacher_bio(bio, out):
-    """toitures BDNB ≥ 400 m² du producteur : par SIREN (propriétaire), sinon bâtiment le plus proche du siège (≤ BIO_DMAX m, murs d'un tiers possible)"""
-    if not bio or out is None or 'lat' not in out.columns: return
-    cols = {c: (c in out.columns) for c in ('batiment_groupe_id', 'lat', 'lon', 'siren', 'proprietaire', 'kwc_potentiel', 'emprise_sol_m2', 'adresse')}
-    g = lambda c, d=None: (out[c] if cols.get(c) else pd.Series([d] * len(out), index=out.index))
-    bats = [{'id': str(b), 'lat': float(la), 'lon': float(lo), 'siren': str(sn or ''), 'prop': str(pn or '')[:60], 'kwc': int(k or 0), 'm2': int(m or 0), 'adr': str(a or '')[:60]}
-            for b, la, lo, sn, pn, k, m, a in zip(g('batiment_groupe_id', ''), out['lat'], out['lon'], g('siren', '').fillna(''), g('proprietaire', '').fillna(''), g('kwc_potentiel', 0).fillna(0), g('emprise_sol_m2', 0).fillna(0), g('adresse', '').fillna(''))
-            if la == la and lo == lo and la is not None]
-    if not bats: return
-    par_siren = {}
-    for b in bats:
-        if b['siren']: par_siren.setdefault(b['siren'], []).append(b)
-    gb = _grille(bats); ns = 0; np_ = 0
-    for x in bio:
-        l = par_siren.get(x['siren']) if x['siren'] else None
-        if l: x['bat_n'] = len(l); x['kwc'] = sum(b['kwc'] for b in l); x['m2'] = sum(b['m2'] for b in l); x['bat_via'] = 'siren'; ns += 1; continue
-        if x.get('lat') and x.get('lon'):
-            pr = _proches(gb, bats, float(x['lat']), float(x['lon']), BIO_DMAX)
-            if pr:
-                d_, i = pr[0]; b = bats[i]; x['bat_n'] = 1; x['kwc'] = b['kwc']; x['m2'] = b['m2']; x['bat_via'] = 'proximite'; x['d'] = int(d_); x['bat_adr'] = b['adr']
-                if b['siren'] and b['siren'] != x['siren']: x['prop'] = b['prop']; x['prop_siren'] = b['siren']
-                np_ += 1
-    print(f'  Producteurs bio avec toiture BDNB : {ns:,} par SIREN, {np_:,} par proximité (≤ {BIO_DMAX} m)')
 
 # ---------------- parkings extérieurs (OpenStreetMap) : obligation d'ombrières, loi APER art. 40 ----------------
 OVERPASS = ('https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter')   # kumi.systems et private.coffee répondent 504 sur les requêtes par area
@@ -803,16 +714,11 @@ def ecrire_relais(path, dep, r):
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'source': meta, 'donnees': val}, f, ensure_ascii=False, separators=(',', ':'))
             print(f'  → {dossier}/{dep}.json')
-    bio = r.pop('_bio_complet', None)
-    if bio is not None:   # producteurs bio : publié dans contacts/ (dossier déjà versionné) sous le nom bio-<dep>.json
-        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'contacts'); os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, 'bio-' + dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'n': len(bio), 'dmax_m': BIO_DMAX, 'source': 'producteurs engagés en agriculture biologique : annuaire des opérateurs de l’Agence Bio (open data, coordonnées publiées par les opérateurs) ; toitures BDNB ≥ 400 m² rattachées par SIREN ou à moins de 100 m du siège', 'donnees': bio}, f, ensure_ascii=False, separators=(',', ':'))
-        print(f'  → contacts/bio-{dep}.json : {len(bio):,} producteurs')
     ens = r.pop('_enseignes_complet', None)
-    if ens is not None:   # enseignes sous marque : publié dans parkings/ (dossier déjà versionné par le workflow) sous le nom enseignes-<dep>.json
-        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, 'enseignes-' + dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'n': len(ens), 'dmax_m': ENSEIGNE_DMAX, 'source': 'enseignes sous marque : OpenStreetMap (© contributeurs OSM, ODbL) ; propriétaire des murs = bâtiment BDNB ≥ 400 m² le plus proche, personnes morales seulement', 'donnees': ens}, f, ensure_ascii=False, separators=(',', ':'))
-        print(f'  → parkings/enseignes-{dep}.json : {len(ens):,} enseignes')
+    if ens is not None:   # enseignes sous marque : dossier enseignes/, comme les autres relais
+        d = os.path.join(os.path.dirname(os.path.abspath(path)), 'enseignes'); os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, dep + '.json'), 'w', encoding='utf-8') as f: json.dump({'dep': dep, 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'n': len(ens), 'dmax_m': ENSEIGNE_DMAX, 'source': 'enseignes sous marque : OpenStreetMap (© contributeurs OSM, ODbL) ; propriétaire des murs = bâtiment BDNB ≥ 400 m² le plus proche, personnes morales seulement', 'donnees': ens}, f, ensure_ascii=False, separators=(',', ':'))
+        print(f'  → enseignes/{dep}.json : {len(ens):,} enseignes')
     complet = r.pop('_parkings_complet', None)
     if complet is not None:   # liste complète des parkings du département, fichier séparé chargé à la demande par SuiviMarché
         d = os.path.join(os.path.dirname(os.path.abspath(path)), 'parkings'); os.makedirs(d, exist_ok=True)
@@ -1039,32 +945,22 @@ def traiter(zpath, sit_path, relais=None, excel=True):
 
     # 9. position des bâtiments retenus : premier anneau de la géométrie (Lambert-93) → centroïde → WGS84 ; lu par morceaux pour ne garder que les candidats
     try:
-        ids = set(cand['batiment_groupe_id']); pos = {}; parts = {}
+        ids = set(cand['batiment_groupe_id']); pos = {}
         with z.open('csv/batiment_groupe.csv') as f:
             for chunk in pd.read_csv(io.TextIOWrapper(f, encoding='utf-8'), sep=';', usecols=['batiment_groupe_id', 'geom_groupe'], dtype=str, chunksize=200000):
                 ch = chunk[chunk['batiment_groupe_id'].isin(ids)]
                 for bid, g in zip(ch['batiment_groupe_id'], ch['geom_groupe'].fillna('')):
-                    # un groupe peut être un MULTIPOLYGON (plusieurs corps de bâtiment) : le repère est le centroïde (formule des trapèzes) du plus grand
-                    # anneau extérieur, et non la moyenne des sommets du premier polygone, qui plaçait l'emprise totale sur une annexe (Alstom Petite-Forêt)
-                    meilleur = None
-                    for ring in re.findall(r'\(\(([^()]+)\)', g):
-                        pts = [tuple(map(float, q.split()[:2])) for q in ring.split(',') if len(q.split()) >= 2]
-                        if len(pts) < 3: continue
-                        a2 = 0.0; cx = 0.0; cy = 0.0
-                        for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
-                            w = x0 * y1 - x1 * y0; a2 += w; cx += (x0 + x1) * w; cy += (y0 + y1) * w
-                        if abs(a2) < 1e-6: continue
-                        aire = abs(a2) / 2; c = (cx / (3 * a2), cy / (3 * a2))
-                        if meilleur is None or aire > meilleur[0]: meilleur = (aire, c, len(re.findall(r'\(\(', g)))
-                    if meilleur is None: continue
-                    pos[bid] = lambert93_vers_wgs84(*meilleur[1]); parts[bid] = meilleur[2]
+                    m = re.search(r'\(\(([^()]+)\)', g)
+                    if not m: continue
+                    pts = [tuple(map(float, q.split()[:2])) for q in m.group(1).split(',') if len(q.split()) >= 2]
+                    if not pts: continue
+                    x = sum(q[0] for q in pts) / len(pts); y = sum(q[1] for q in pts) / len(pts); pos[bid] = lambert93_vers_wgs84(x, y)
         cand['lat'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][0], 5) if b in pos else None); cand['lon'] = cand['batiment_groupe_id'].map(lambda b: round(pos[b][1], 5) if b in pos else None)
-        cand['corps'] = cand['batiment_groupe_id'].map(lambda b: parts.get(b, 1))
         print(f'  Positions : {len(pos):,} bâtiments géolocalisés')
     except Exception as e:
-        print('  (géométrie non exploitée :', e, ')'); cand['lat'] = None; cand['lon'] = None; cand['corps'] = 1
+        print('  (géométrie non exploitée :', e, ')'); cand['lat'] = None; cand['lon'] = None
 
-    cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'corps', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
+    cols = ['score', 'libelle_commune_insee', 'adresse', 'usage', 'nature_bdtopo', 'emprise_m2', 'hauteur_m', 'nb_niveau', 'annee_construction', 'mat_toit_txt',
             'kwc_potentiel', 'production_mwh', 'conso_pro_mwh', 'annee_conso', 'nb_pdl_pro', 'couverture_conso_pct', 'pdl_hta', 'contrainte', 'dist_monument_m',
             'proprietaire', 'siren', 'forme_juridique', 'adresse_proprietaire', 'lien_annuaire', 'permis_date', 'permis_etat', 'permis_demandeur', 'permis_siren', 'permis_m2_locaux', 'parcelle_id', 'parcelle_m2', 'conso_gaz_mwh', 'annee_gaz', 'dpe_classe', 'dpe_ges', 'dpe_kwh_m2', 'dpe_chauffage', 'dpe_surface_m2', 'dpe_date', 'lat', 'lon', 'code_commune_insee', 'batiment_groupe_id']
     out = cand[cols].rename(columns={'libelle_commune_insee': 'commune', 'emprise_m2': 'emprise_sol_m2', 'mat_toit_txt': 'materiau_toit', 'annee_construction': 'annee_constr', 'code_commune_insee': 'insee'})
