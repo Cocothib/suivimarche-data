@@ -117,13 +117,13 @@ if __name__ == '__main__':
         for k, r in map(sonder, encore):
             r['essais'] = 2
             res[k] = r
-    # les serveurs Overpass se compensent (504 aléatoires) : défaut d'un seul = à surveiller, défaut de tous = en défaut
+    # les serveurs Overpass se compensent (504 aléatoires, l'appli bascule seule) : OK dès que l'un répond, erreur des autres notée ; défaut de tous = en défaut
     ovp = [k for k in res if k.startswith('overpass')]
     if any(res[k]['ok'] is True for k in ovp):
         for k in ovp:
-            if res[k]['ok'] is False:
-                res[k]['ok'] = 'partiel'
-                res[k]['msg'] = 'en défaut, mais un autre serveur Overpass répond : ' + res[k]['msg']
+            if res[k]['ok'] is not True:
+                res[k]['ok'] = True
+                res[k]['msg'] = 'indisponible à cet instant, un autre serveur Overpass répond : ' + res[k]['msg']
     ko = [k for k, r in res.items() if r['ok'] is not True]
     for k, r in res.items():
         print('%-12s %-8s %6d ms  %s' % (k, 'OK' if r['ok'] is True else ('PARTIEL' if r['ok'] == 'partiel' else 'KO'), r['ms'], r['msg']))
