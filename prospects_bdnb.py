@@ -203,6 +203,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
                 sirens = set([e['siren']] + list(e.get('via') or [])); lst = [x for x in en if x.get('siren') and x['siren'] in sirens]
                 if lst: e['enseignes'] = {'n': len(lst), 'l': [{'b': x['brand'], 't': x['type'], 'com': x['com']} for x in lst[:6]]}
         for e in cibles: e.pop('bat_ids', None)
+        pvgis_sites(cibles)
         if cr is not None: r['croisement'] = cr
         if det: r['details_n'] = len(det); r['_details_complet'] = det
     if en is not None:
@@ -544,10 +545,14 @@ def _agreger(out, permis, cible, entree):
             if cl: e['dpe'][cl] = e['dpe'].get(cl, 0) + 1
             if ch: k = 'gaz' if 'gaz' in ch.lower() else 'fioul' if 'fioul' in ch.lower() else 'électricité' if 'lectri' in ch.lower() else 'réseau' if 'seau' in ch.lower() else 'bois' if 'bois' in ch.lower() else 'autre'; e['dpe_chauf'][k] = e['dpe_chauf'].get(k, 0) + 1
         # sites par commune, avec la position de chaque bâtiment (mini-carte de la fiche prospect : bâtiments BDNB sur photo aérienne)
-        for com_, ins, kwc_, la, lo, adr, em, cp in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0), num(g['corps']).fillna(1) if 'corps' in g.columns else [1] * len(g)):
+        col = lambda c, d='': g[c].fillna(d) if c in g.columns else [d] * len(g)
+        for com_, ins, kwc_, la, lo, adr, em, cp, an, hm, nv, mt, nat, ctr in zip(g['commune'].fillna(''), g['insee'].fillna(''), num(g['kwc_potentiel']).fillna(0), g['lat'], g['lon'], g['adresse'].fillna(''), num(g['emprise_sol_m2']).fillna(0), num(g['corps']).fillna(1) if 'corps' in g.columns else [1] * len(g),
+                                                                  col('annee_constr'), col('hauteur_m'), col('nb_niveau'), col('materiau_toit'), col('nature_bdtopo'), col('contrainte')):
             st = e['sites'].setdefault(ins or com_, {'com': com_, 'insee': ins, 'n': 0, 'kwc': 0, 'lat': [], 'lon': [], 'adr': '', 'bats': []})
             st['n'] += 1; st['kwc'] += int(kwc_); st['adr'] = st['adr'] or adr[:60]
-            if la == la and lo == lo and la is not None: st['lat'].append(la); st['lon'].append(lo); b_ = {'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]}; (int(cp) > 1) and b_.update({'corps': int(cp)}); st['bats'].append(b_)
+            if la == la and lo == lo and la is not None:
+                st['lat'].append(la); st['lon'].append(lo); b_ = {'lat': round(float(la), 5), 'lon': round(float(lo), 5), 'm2': int(em), 'kwc': int(kwc_), 'adr': adr[:60]}; (int(cp) > 1) and b_.update({'corps': int(cp)})
+                b_.update(caracteristiques_bat(an, hm, nv, mt, nat, ctr)); st['bats'].append(b_)
         e['bat_ids'].extend(list(g['batiment_groupe_id']))
     # permis : ceux rattachés aux bâtiments (zip BDNB) et le CSV Sitadel du département s'il est fourni
     pl = [(str(a), float(b or 0)) for a, b in zip(out['permis_siren'].fillna(''), out['permis_m2_locaux'].fillna(0)) if a]
@@ -556,6 +561,65 @@ def _agreger(out, permis, cible, entree):
         sp = cible(s_)
         if not sp: continue
         e = entree(sp); e['permis'] += 1; e['permis_m2'] += int(m2); e['via'].add(s_)
+
+def _entier(v):
+    try:
+        v = float(v)
+        return int(v) if v == v else None
+    except (TypeError, ValueError):
+        return None
+
+def caracteristiques_bat(an, hm, nv, mt, nat, ctr):
+    """année de construction (fichiers fonciers ; avant 1997 = amiante possible), hauteur (BD TOPO), niveaux, matériau de toiture s'il est
+       connu (92 % « indéterminé » pour les bâtiments professionnels), nature BD TOPO, contrainte patrimoniale (avis ABF)"""
+    r = {}
+    a = _entier(an)
+    if a and 1700 <= a <= datetime.date.today().year: r['an'] = a
+    try:
+        h = float(hm)
+        if h == h and 0 < h < 200: r['h'] = round(h, 1)
+    except (TypeError, ValueError):
+        pass
+    n = _entier(nv)
+    if n and 0 < n < 60: r['niv'] = n
+    mt = str(mt or '').strip()
+    if mt and 'INDETERMINE' not in mt.upper(): r['toit'] = mt.capitalize()[:30]
+    nat = str(nat or '').strip()
+    if nat and nat.lower() not in ('indifférenciée', 'nan'): r['nat'] = nat[:30]
+    ctr = str(ctr or '').strip()
+    if ctr and ctr.lower() != 'nan': r['ctr'] = ctr[:60]
+    return r
+
+# ---------------- PVGIS (Commission européenne) : production par kWc au site, relief compris ----------------
+PVGIS_API = 'https://re.jrc.ec.europa.eu/api/v5_3/PVcalc'
+_PVGIS = {}
+
+def pvgis(lat, lon):
+    """kWh/kWc/an à l'inclinaison optimale plein sud et sur toit plat (10°, plein sud), pertes 14 %, horizon du relief ;
+       mis en cache par maille de 0,05° (≈ 5 km : écart de productible négligeable)"""
+    cle = (round(lat * 20) / 20, round(lon * 20) / 20)
+    if cle in _PVGIS: return _PVGIS[cle]
+    r = None
+    try:
+        q = lambda extra: urllib.request.urlopen(urllib.request.Request(PVGIS_API + '?' + urllib.parse.urlencode(dict({'lat': cle[0], 'lon': cle[1], 'peakpower': 1, 'loss': 14, 'outputformat': 'json'}, **extra)), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=30)
+        with q({'optimalangles': 1}) as f: j = json.load(f)
+        fx = j['outputs']['totals']['fixed']; ms = j['inputs']['mounting_system']['fixed']
+        r = {'kwh': int(round(fx['E_y'])), 'pente': int(round(ms['slope']['value'])), 'az': int(round(ms['azimuth']['value']))}
+        with q({'angle': 10, 'aspect': 0}) as f: j = json.load(f)
+        r['kwh10'] = int(round(j['outputs']['totals']['fixed']['E_y']))
+    except Exception as e:  # noqa: BLE001
+        print('  (PVGIS indisponible :', str(e)[:100], ')')
+    _PVGIS[cle] = r
+    return r
+
+def pvgis_sites(cibles):
+    n = 0
+    for e in cibles:
+        for st in e.get('sites') or []:
+            if st.get('lat') is not None and st.get('lon') is not None:
+                pv = pvgis(st['lat'], st['lon'])
+                if pv: st['pvgis'] = pv; n += 1
+    if n: print(f'  PVGIS : {n} sites ({len([v for v in _PVGIS.values() if v])} mailles interrogées)')
 
 def _finaliser(e, n_sites=8):
     e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
