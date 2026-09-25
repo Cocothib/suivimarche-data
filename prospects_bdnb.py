@@ -585,7 +585,7 @@ def caracteristiques_bat(an, hm, nv, mt, nat, ctr):
     mt = str(mt or '').strip()
     if mt and 'INDETERMINE' not in mt.upper(): r['toit'] = mt.capitalize()[:30]
     nat = str(nat or '').strip()
-    if nat and nat.lower() not in ('indifférenciée', 'nan'): r['nat'] = nat[:30]
+    if nat and nat.lower() not in ('indifférenciée', 'nan'): r['nat'] = nat[:60]
     ctr = str(ctr or '').strip()
     if ctr and ctr.lower() != 'nan': r['ctr'] = ctr[:60]
     return r
