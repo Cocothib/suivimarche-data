@@ -3,8 +3,9 @@
 Une requête minimale par API interrogée par le navigateur (mêmes adresses que les valeurs par défaut de
 Paramètres › Sources dans index.html) plus les sources propres au relais (energy-charts, DILA, BDNB).
 Écrit sante.json {maj, n, n_ko, res: {clé: {ok, code, ms, msg}}} lu par l'application (Paramètres › Sources,
-colonne « Vu du relais »). Sort en erreur (exit 1) dès qu'une source est en défaut : GitHub envoie alors un
-courriel « Run failed » au propriétaire du dépôt, sans qu'il soit besoin d'ouvrir l'application.
+colonne « Vu du relais »). Sort en erreur (exit 1) quand une source essentielle est en défaut, ou une source secondaire
+deux matins de suite (une panne d'un jour, fréquente sur Géorisques ou Overpass vus de GitHub, ne déclenche rien) :
+GitHub envoie alors un courriel « Run failed » au propriétaire du dépôt, sans qu'il soit besoin d'ouvrir l'application.
 Stdlib seulement, aucune clé.
 """
 import concurrent.futures as cf
@@ -108,6 +109,11 @@ def sonder(s):
 
 if __name__ == '__main__':
     now = dt.datetime.now(dt.timezone.utc)
+    try:
+        with open('sante.json', encoding='utf-8') as f:
+            avant = json.load(f).get('res') or {}
+    except Exception:  # noqa: BLE001
+        avant = {}
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
         res = dict(ex.map(sonder, SONDES))
     # second essai 20 s plus tard pour les sources en défaut : un 504 passager ne doit pas déclencher un courriel
@@ -124,6 +130,10 @@ if __name__ == '__main__':
             if res[k]['ok'] is not True:
                 res[k]['ok'] = True
                 res[k]['msg'] = 'indisponible à cet instant, un autre serveur Overpass répond : ' + res[k]['msg']
+    # jours de défaut consécutifs (lus dans le sante.json de la veille)
+    for k, r in res.items():
+        if r['ok'] is False:
+            r['ko_jours'] = int((avant.get(k) or {}).get('ko_jours') or (1 if (avant.get(k) or {}).get('ok') is False else 0)) + 1
     ko = [k for k, r in res.items() if r['ok'] is not True]
     for k, r in res.items():
         print('%-12s %-8s %6d ms  %s' % (k, 'OK' if r['ok'] is True else ('PARTIEL' if r['ok'] == 'partiel' else 'KO'), r['ms'], r['msg']))
@@ -131,5 +141,8 @@ if __name__ == '__main__':
     with open('sante.json', 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     print('sante.json : %d sources, %d en défaut, %d à surveiller' % (out['n'], out['n_ko'], out['n_partiel']))
-    # exit 1 quand une source ne répond pas : GitHub avertit le propriétaire du dépôt (« Run failed ») ; un simple 429 ne compte pas
-    sys.exit(1 if out['n_ko'] else 0)
+    # exit 1 : GitHub avertit le propriétaire du dépôt (« Run failed ») ; un simple 429 ne compte pas, une source secondaire seulement au 2e jour
+    alerte = [k for k, r in res.items() if r['ok'] is False and (r['vital'] or r.get('ko_jours', 1) >= 2)]
+    if alerte:
+        print('ALERTE : ' + ', '.join('%s (%d j)' % (k, res[k].get('ko_jours', 1)) for k in alerte))
+    sys.exit(1 if alerte else 0)
