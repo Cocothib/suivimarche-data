@@ -791,6 +791,8 @@ def parkings_osm(dep):
             if x0 <= lon <= x1 and y0 <= lat <= y1 and any(_dans((lon, lat), rg) for rg in rings): com = nom; break
         rows.append({'id': int(el['id']), 'nom': (t.get('name') or t.get('operator') or t.get('brand') or '')[:60], 'op': (t.get('operator') or '')[:60], 'brand': (t.get('brand') or '')[:40], 'com': com, 'm2': int(a), 'lat': round(lat, 5), 'lon': round(lon, 5), 'acces': t.get('access', ''), 'places': t.get('capacity', ''), 'cle': sorted(_cle_parking(t))})
     rows.sort(key=lambda r: -r['m2'])
+    try: rattacher_hotes(rows, hotes_osm(dep))
+    except Exception as e: print('  (équipements hôtes non exploités :', e, ')')
     geo = set()                                                     # noms de communes du département : jamais des clés d'enseigne (« Calais », « Nantes »…)
     for _, nom, _, _ in coms: geo |= {m for m in re.split(r'[^a-z0-9]+', __import__('unicodedata').normalize('NFKD', nom).encode('ascii', 'ignore').decode().lower()) if len(m) >= 4}
     for r in rows: r['cle'] = [m for m in r['cle'] if m not in geo]
@@ -799,7 +801,69 @@ def parkings_osm(dep):
     print(f'  Parkings OSM ≥ {PARKING_MIN} m² : {len(rows):,} ({n10} ≥ 10 000 m², {sum(1 for r in rows if r["nom"])} nommés, {sum(1 for r in rows if r["op"] or r["brand"])} avec exploitant ou enseigne)')
     return {'n1500': len(rows), 'n10000': n10, 'm2': int(sum(r['m2'] for r in rows)), 'm2_10000': int(sum(r['m2'] for r in rows if r['m2'] >= 10000)), 'nommes': sum(1 for r in rows if r['nom']), 'top': top,
             'tous': [(r['nom'], r['com'], r['m2'], set(r['cle'])) for r in rows if r['cle']], 'geo': geo,   # 'tous' et 'geo' servent au rapprochement puis sont retirés
-            'complet': [{k: r[k] for k in ('id', 'nom', 'op', 'brand', 'com', 'm2', 'lat', 'lon', 'acces', 'places') if r.get(k)} for r in rows], 'exploitants': sum(1 for r in rows if r['op'] or r['brand'])}   # liste complète → parkings/<dep>.json
+            'complet': [{k: r[k] for k in ('id', 'nom', 'op', 'brand', 'com', 'm2', 'lat', 'lon', 'acces', 'places', 'hote') if r.get(k)} for r in rows], 'exploitants': sum(1 for r in rows if r['op'] or r['brand'])}   # liste complète → parkings/<dep>.json
+
+# équipement « hôte » d'un parking (OSM) : ce que le parking dessert, donc à qui s'adresser (aéroport → société gestionnaire, hôpital, centre commercial…)
+HOTES = [  # (clé, valeurs, libellé, priorité : plus petit = plus spécifique)
+    ('aeroway', 'aerodrome', 'aéroport', 1), ('aeroway', 'terminal', 'aérogare', 1),
+    ('amenity', 'hospital', 'hôpital', 1), ('amenity', 'clinic', 'clinique', 2), ('amenity', 'university', 'université', 1), ('amenity', 'college', 'enseignement supérieur', 2), ('amenity', 'school', 'établissement scolaire', 3),
+    ('amenity', 'townhall', 'mairie', 3), ('amenity', 'exhibition_centre', 'parc des expositions', 1), ('amenity', 'conference_centre', 'centre de congrès', 1), ('amenity', 'cinema', 'cinéma', 2), ('amenity', 'theatre', 'salle de spectacle', 2), ('amenity', 'prison', 'établissement pénitentiaire', 1),
+    ('shop', 'mall', 'centre commercial', 1), ('shop', 'supermarket', 'supermarché', 2), ('shop', 'department_store', 'grand magasin', 2), ('shop', 'doityourself', 'magasin de bricolage', 2), ('shop', 'furniture', 'magasin d’ameublement', 2), ('shop', 'garden_centre', 'jardinerie', 2), ('shop', 'car', 'concession automobile', 3), ('shop', 'wholesale', 'commerce de gros', 2),
+    ('leisure', 'stadium', 'stade', 1), ('leisure', 'sports_centre', 'complexe sportif', 2), ('leisure', 'water_park', 'parc aquatique', 1), ('tourism', 'theme_park', 'parc de loisirs', 1), ('tourism', 'zoo', 'zoo', 1), ('tourism', 'hotel', 'hôtel', 3),
+    ('railway', 'station', 'gare', 1), ('man_made', 'works', 'usine', 1), ('office', 'company', 'bureaux', 3), ('office', 'government', 'administration', 3),
+    ('landuse', 'retail', 'zone commerciale', 4), ('landuse', 'commercial', 'zone tertiaire', 4), ('landuse', 'industrial', 'zone industrielle', 4),
+]
+HOTE_DMAX = 250   # m : équipement voisin retenu à défaut d'un équipement qui contient le parking
+
+def hotes_osm(dep):
+    """équipements susceptibles de « posséder » un grand parking (aéroport, hôpital, université, centre commercial, stade, gare, usine,
+       zones d'activité nommées), avec emprise (bbox) et exploitant ; les zones (landuse) seulement si elles sont nommées"""
+    # requête découpée par clé OSM (une requête unique sur un grand département dépasse le délai des serveurs publics)
+    elements = []; echecs = 0
+    for cle in dict.fromkeys(k for k, _, _, _ in HOTES):
+        parts = ''.join(f'nwr["{k}"="{v}"]' + ('["name"]' if pr >= 3 or k == 'landuse' else '') + '(area.a);' for k, v, _, pr in HOTES if k == cle)
+        data = _overpass(f'[out:json][timeout:200];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;({parts});out tags center bb;')
+        if data is None or (not data.get('elements') and data.get('remark')): echecs += 1; print(f'  (équipements {cle} indisponibles)'); continue
+        elements += data.get('elements', [])
+    if echecs == len(set(k for k, _, _, _ in HOTES)): return None
+    data = {'elements': elements}
+    lib = {(k, v): (l, pr) for k, v, l, pr in HOTES}; rows = []
+    for el in data.get('elements', []):
+        t = el.get('tags') or {}; c = el.get('center') or ({'lat': el['lat'], 'lon': el['lon']} if 'lat' in el else None)
+        if not c: continue
+        typ = next((lib[(k, t[k])] for k, v, _, _ in HOTES if t.get(k) == v), None)
+        if not typ: continue
+        b = el.get('bounds')
+        rows.append({'id': f"{el.get('type', 'n')[0]}{el.get('id')}", 't': typ[0], 'pr': typ[1], 'nom': (t.get('name') or '')[:70], 'op': (t.get('operator') or t.get('owner') or t.get('brand') or '')[:70],
+                     'lat': float(c['lat']), 'lon': float(c['lon']), 'bb': (b['minlat'], b['minlon'], b['maxlat'], b['maxlon']) if b else None})
+    print(f'  Équipements hôtes des parkings (OSM) : {len(rows):,}')
+    return rows
+
+def rattacher_hotes(parkings, hotes):
+    """pour chaque parking : équipement qui le contient (bbox élargie de 60 m ; le plus spécifique, puis le plus petit), sinon le plus proche à moins de HOTE_DMAX m"""
+    if not hotes: return
+    import math
+    avec_bb = [h for h in hotes if h['bb'] and (h['bb'][2] - h['bb'][0]) < 0.2 and (h['bb'][3] - h['bb'][1]) < 0.3]
+    cell = 0.02; grille = {}
+    for i, h in enumerate(avec_bb):
+        a, b, c, d = h['bb']
+        for x in range(int(math.floor(a / cell)), int(math.floor(c / cell)) + 1):
+            for y in range(int(math.floor(b / cell)), int(math.floor(d / cell)) + 1): grille.setdefault((x, y), []).append(i)
+    gp = _grille(hotes); n = 0
+    for r in parkings:
+        lat, lon = r['lat'], r['lon']; m = 0.00055; best = None
+        for i in grille.get((int(math.floor(lat / cell)), int(math.floor(lon / cell))), []):
+            h = avec_bb[i]; a, b, c, d = h['bb']
+            if a - m <= lat <= c + m and b - m * 1.5 <= lon <= d + m * 1.5:
+                cle = (h['pr'], (c - a) * (d - b))
+                if best is None or cle < best[0]: best = (cle, h, 0)
+        if best is None:
+            pr = [(d_, hotes[i]) for d_, i in _proches(gp, hotes, lat, lon, HOTE_DMAX)]
+            if pr: d_, h = min(pr, key=lambda x: (x[1]['pr'], x[0])); best = (None, h, int(d_))
+        if best:
+            h = best[1]; r['hote'] = {k: v for k, v in {'t': h['t'], 'nom': h['nom'], 'op': h['op'], 'd': best[2], 'id': h['id']}.items() if v not in ('', None)}; n += 1
+            if h['op'] and 'cle' in r: r['cle'] = list(set(r['cle']) | _mots(h['op']))   # exploitant de l'équipement : rapprochement parking → prospect
+    print(f'  Parkings rattachés à un équipement : {n:,} sur {len(parkings):,}')
 
 def _overpass(q, essais=3):
     """requête Overpass avec bascule de serveur et nouvel essai ; None si tout échoue"""
