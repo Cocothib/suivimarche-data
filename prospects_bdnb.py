@@ -109,6 +109,11 @@ def resume_departement(dep, zpath, out, props, com, permis):
     try: en = enseignes_osm(dep)
     except Exception as e: print('  (enseignes OSM non exploitées :', e, ')'); en = None
     if en: rattacher_enseignes(en, out)
+    # détail des grands propriétaires sans bilan GES (20 premiers BDNB, propriétaires de murs d'enseignes) : mêmes enrichissements que le croisement
+    ens_res = resume_enseignes(en) if en is not None else None
+    exclus = set(x for e in (cr or []) for x in [e['siren']] + list(e.get('via') or []))
+    det = details_proprietaires(out, permis, [p['siren'] for p in r['proprietaires']] + [p['siren'] for p in (ens_res or {}).get('proprietaires', [])], exclus)
+    cibles = (cr or []) + det
     dossier = os.environ.get('BDNB_DOSSIER') or os.path.dirname(os.path.abspath(zpath))
     bd = bdappv_par_commune(dep, dossier)
     # contacts publics, friches, émissions par site, procédures collectives
@@ -128,7 +133,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
     except Exception as e: print('  (Agence Bio non exploitée :', e, ')'); bio = None
     for p in r.get('proprietaires', []):
         if p.get('siren') in pc: p['pc'] = pc[p['siren']]
-    if cr is not None:
+    if cibles:
         pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
         fi_par_siren = {}
         for x in fi: fi_par_siren.setdefault(x['siret'][:9], []).append(x)
@@ -136,7 +141,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
         for x in (ir or []): ir_par_siren.setdefault(x['siret'][:9], []).append(x)
         gc = _grille(co) if co else None; gi2 = _grille([x for x in (ir or []) if x['lat']]) if ir else None; ir_pos = [x for x in (ir or []) if x['lat']]
         fr_cle = [(set(_mots(x.get('prop_nom', ''))), x) for x in (fr or []) if x.get('prop_nom')]
-        for e in cr:
+        for e in cibles:
             sirens = set([e['siren']] + list(e.get('via') or []))
             if e['siren'] in pc: e['pc'] = pc[e['siren']]
             lst = [x for sn in sirens for x in fi_par_siren.get(sn, [])]
@@ -168,12 +173,12 @@ def resume_departement(dep, zpath, out, props, com, permis):
     if ir is not None: r['irep'] = {'n': len(ir), 'co2_t': int(sum(x['co2_t'] for x in ir)), 'annee': IREP_ANNEE}; r['_irep_complet'] = ir
     r['pc_n'] = len(pc)
     if bio is not None: r['bio'] = {'n': len(bio), 'tel': sum(1 for x in bio if x['tel']), 'mail': sum(1 for x in bio if x['mail']), 'toiture': sum(1 for x in bio if x.get('kwc')), 'kwc': int(sum(x.get('kwc') or 0 for x in bio))}; r['_bio_complet'] = bio
-    if cr is not None:
-        if pk: rapprocher_parkings(cr, pk, props)
+    if cr is not None or cibles:
+        if pk: rapprocher_parkings(cibles, pk, props)
         pos = {b: (la, lo) for b, la, lo in zip(out['batiment_groupe_id'], out['lat'], out['lon']) if la == la and la is not None}
         if so:
-            gs = _grille(so); noms_c = {e['siren']: (_mots(e['nom']) | set().union(*[_mots(p) for p in []])) for e in cr}
-            for e in cr:
+            gs = _grille(so); noms_c = {e['siren']: (_mots(e['nom']) | set().union(*[_mots(p) for p in []])) for e in cibles}
+            for e in cibles:
                 trouves = {}
                 for b in e.get('bat_ids', []):
                     if b in pos:
@@ -185,7 +190,7 @@ def resume_departement(dep, zpath, out, props, com, permis):
                 if lst: e['pv'] = {'n': len(lst), 'kw': int(sum(x['kw'] or 0 for x in lst)), 'sites': [{'id': x['id'], 'nom': x['nom'] or x['op'], 'kw': x['kw'], 'lieu': x['lieu'], 'd': x['d'], 'lat': x['lat'], 'lon': x['lon']} for x in lst]}
         if ic:
             gi = _grille(ic)
-            for e in cr:
+            for e in cibles:
                 sirens = set([e['siren']] + list(e.get('via') or [])); lst = [x for x in ic if x['siret'][:9] in sirens]
                 vus = set(x['aiot'] for x in lst)
                 for b in e.get('bat_ids', []):
@@ -194,13 +199,14 @@ def resume_departement(dep, zpath, out, props, com, permis):
                             if ic[i]['aiot'] not in vus: lst.append(dict(ic[i], d=int(d_))); vus.add(ic[i]['aiot'])
                 if lst: e['icpe'] = resume_icpe(lst)
         if en:
-            for e in cr:
+            for e in cibles:
                 sirens = set([e['siren']] + list(e.get('via') or [])); lst = [x for x in en if x.get('siren') and x['siren'] in sirens]
                 if lst: e['enseignes'] = {'n': len(lst), 'l': [{'b': x['brand'], 't': x['type'], 'com': x['com']} for x in lst[:6]]}
-        for e in cr: e.pop('bat_ids', None)
-        r['croisement'] = cr
+        for e in cibles: e.pop('bat_ids', None)
+        if cr is not None: r['croisement'] = cr
+        if det: r['details_n'] = len(det); r['_details_complet'] = det
     if en is not None:
-        r['enseignes'] = resume_enseignes(en)
+        r['enseignes'] = ens_res
         r['_enseignes_complet'] = [{k: v for k, v in x.items() if k != 'cle' and v not in (None, '', [], False)} for x in en]
     if pk:
         r['_parkings_complet'] = pk.pop('complet', None); r['parkings'] = pk
@@ -515,16 +521,12 @@ def charger_beges():
     _BEGES = (principal, filiales); print(f'  bilans GES ADEME : {len(principal):,} structures, {len(filiales):,} SIREN consolidés')
     return _BEGES
 
-def croiser_beges(dep, out, permis):
-    """structures ayant déposé un bilan GES (siège n'importe où) qui possèdent des grandes toitures ou ont un permis récent dans le département"""
-    try: principal, filiales = charger_beges()
-    except Exception as e: print('  (bilans GES non interrogés :', e, ')'); return None
-    cible = lambda s: principal.get(s) and s or filiales.get(s)                              # SIREN propriétaire → SIREN principal du bilan
-    agg = {}
-    def entree(sp):
-        if sp not in agg: b = principal[sp]; agg[sp] = {'siren': sp, 'nom': b['nom'], 'dep': b['dep'], 'annee': b['annee'], 't': int(b['t']), 'naf': b.get('naf', ''), 'n': 0, 'kwc': 0, 'score': 0, 'com': {}, 'permis': 0, 'permis_m2': 0, 'via': set(),
-                                                        'conso': 0, 'prod': 0, 'hta': 0, 'agri': 0, 'emprise': 0, 'sol': 0, 'parcelles': set(), 'gaz': 0, 'gaz_n': 0, 'dpe': {}, 'dpe_chauf': {}, 'sites': {}, 'bat_ids': []}
-        return agg[sp]
+def _entree_vide(**base):
+    """entrée agrégée par SIREN (croisement GES ou détail d'un propriétaire sans bilan) : toitures, besoins, sites, bâtiments"""
+    return dict(base, n=0, kwc=0, score=0, com={}, permis=0, permis_m2=0, via=set(), conso=0, prod=0, hta=0, agri=0, emprise=0, sol=0, parcelles=set(), gaz=0, gaz_n=0, dpe={}, dpe_chauf={}, sites={}, bat_ids=[])
+
+def _agreger(out, permis, cible, entree):
+    """cumule bâtiments BDNB et permis par SIREN de regroupement (cible(siren) → SIREN ou None)"""
     own = out[out['siren'].fillna('') != '']
     for s_, g in own.groupby('siren'):
         sp = cible(str(s_))
@@ -554,14 +556,50 @@ def croiser_beges(dep, out, permis):
         sp = cible(s_)
         if not sp: continue
         e = entree(sp); e['permis'] += 1; e['permis_m2'] += int(m2); e['via'].add(s_)
+
+def _finaliser(e, n_sites=8):
+    e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
+    e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None, 'bats': sorted(v['bats'], key=lambda x: -x['kwc'])[:12]} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:n_sites]
+    if not e['dpe']: e.pop('dpe'); e.pop('dpe_chauf')
+
+def croiser_beges(dep, out, permis):
+    """structures ayant déposé un bilan GES (siège n'importe où) qui possèdent des grandes toitures ou ont un permis récent dans le département"""
+    try: principal, filiales = charger_beges()
+    except Exception as e: print('  (bilans GES non interrogés :', e, ')'); return None
+    cible = lambda s: principal.get(s) and s or filiales.get(s)                              # SIREN propriétaire → SIREN principal du bilan
+    agg = {}
+    def entree(sp):
+        if sp not in agg: b = principal[sp]; agg[sp] = _entree_vide(siren=sp, nom=b['nom'], dep=b['dep'], annee=b['annee'], t=int(b['t']), naf=b.get('naf', ''))
+        return agg[sp]
+    _agreger(out, permis, cible, entree)
     rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)[:40]
-    for e in rows:
-        e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
-        e['sites'] = sorted(({'com': v['com'], 'insee': v['insee'], 'n': v['n'], 'kwc': v['kwc'], 'adr': v['adr'], 'lat': round(sum(v['lat']) / len(v['lat']), 5) if v['lat'] else None, 'lon': round(sum(v['lon']) / len(v['lon']), 5) if v['lon'] else None, 'bats': sorted(v['bats'], key=lambda x: -x['kwc'])[:12]} for v in e['sites'].values()), key=lambda d: -d['kwc'])[:8]
-        if not e['dpe']: e.pop('dpe'); e.pop('dpe_chauf')
+    for e in rows: _finaliser(e)
     for e in agg.values():
         if e not in rows: e.pop('bat_ids', None)
     print(f'  Croisement bilans GES : {len(agg):,} structures avec toitures ou permis dans le {dep} (publiées : {len(rows)})')
+    return rows
+
+DETAILS_MAX = 45   # 20 grands propriétaires BDNB + 25 propriétaires de murs d'enseignes
+
+def details_proprietaires(out, permis, sirens, exclus):
+    """même détail que le croisement (sites, bâtiments, besoins, puis ICPE, solaire, parkings, enseignes, contacts) pour les grands
+       propriétaires SANS bilan GES : 20 premiers propriétaires BDNB et propriétaires de murs d'enseignes (foncières, SCI) ; publié
+       dans details/<dép>.json, lu par la fiche prospect de SuiviMarché quand la structure n'est pas dans le croisement"""
+    voulus = [s for s in dict.fromkeys(str(x) for x in sirens if x) if s not in exclus][:DETAILS_MAX]
+    if not voulus: return []
+    ens = set(voulus)
+    noms = {}
+    if 'proprietaire' in out.columns:
+        for sn, pn in zip(out['siren'].fillna(''), out['proprietaire'].fillna('')):
+            if sn in ens and pn and sn not in noms: noms[sn] = str(pn)[:60]
+    agg = {}
+    def entree(sp):
+        if sp not in agg: agg[sp] = _entree_vide(siren=sp, nom=noms.get(sp, ''), naf='')
+        return agg[sp]
+    _agreger(out, permis, lambda s: s if s in ens else None, entree)
+    rows = sorted(agg.values(), key=lambda e: (e['kwc'], e['permis_m2']), reverse=True)
+    for e in rows: _finaliser(e, 12)
+    print(f'  Détail des grands propriétaires sans bilan GES : {len(rows)} structures')
     return rows
 
 
@@ -797,7 +835,7 @@ def rapprocher_parkings(cibles, parkings, props):
     for r in parkings['top']: r.pop('cle', None)
 
 def ecrire_relais(path, dep, r):
-    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees')):
+    for cle, dossier, meta in (('_contacts_complet', 'contacts', 'contacts publics : FINESS (établissements sanitaires et sociaux, data.gouv.fr), répertoire national des élus (ministère de l’Intérieur), OpenStreetMap (© contributeurs OSM, ODbL)'), ('_friches_complet', 'friches', 'friches : Cartofriches (Cerema, sites référencés, data.gouv.fr)'), ('_irep_complet', 'irep', f'émissions déclarées par établissement : registre des émissions polluantes IREP {IREP_ANNEE} (Géorisques)'), ('_solaire_complet', 'solaire', 'solaire existant : OpenStreetMap (© contributeurs OSM, ODbL) et BDAPPV (Kasmi et al. 2023, Zenodo 7358126, comptage par commune)'), ('_icpe_complet', 'icpe', 'installations classées en activité : Géorisques (ministère de la Transition écologique), API installations_classees'), ('_details_complet', 'details', 'détail des grands propriétaires sans bilan GES (20 premiers propriétaires BDNB, propriétaires de murs d’enseignes) : sites et bâtiments BDNB ≥ 400 m², besoins, ICPE, solaire, parkings, enseignes, contacts rattachés')):
         val = r.pop(cle, None)
         if val is not None:
             d = os.path.join(os.path.dirname(os.path.abspath(path)), dossier); os.makedirs(d, exist_ok=True)
@@ -824,6 +862,9 @@ def ecrire_relais(path, dep, r):
             with open(path, encoding='utf-8') as f: data = json.load(f)
         except Exception as e: print('  (relais illisible, recréé :', e, ')'); data = {}
     deps = data.get('deps') if isinstance(data.get('deps'), dict) else {}
+    ancien = deps.get(dep) if isinstance(deps.get(dep), dict) else {}
+    for k in ('icpe', 'parkings', 'enseignes', 'solaire', 'friches', 'irep', 'bio'):
+        if k not in r and k in ancien: r[k] = ancien[k]; r.setdefault('repris', []).append(k); print(f'  ({k} indisponible : résumé du passage précédent conservé)')
     deps[dep] = r
     meta = dict(data.get('_meta') or {})   # conserve millesime_serveur / verifie posés par le workflow
     meta.update({'app': 'SuiviMarché', 'source': 'BDNB (CSTB, data.gouv.fr) — prospects_bdnb.py', 'maj': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
