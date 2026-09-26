@@ -104,6 +104,7 @@ jobs:
               if [ -e .git/rebase-merge ] || [ -e .git/rebase-apply ]; then
                 git rebase --abort || true
                 notre=$(git rev-parse HEAD); git show "$notre:bdnb.json" > /tmp/bdnb/notre_bdnb.json
+                git show "$notre:pvgis_cache.json" > /tmp/bdnb/notre_pvgis.json 2>/dev/null || echo '{}' > /tmp/bdnb/notre_pvgis.json
                 git fetch -q origin main && git show origin/main:bdnb.json > /tmp/bdnb/distant_bdnb.json
                 git reset -q --hard origin/main
                 for f in parkings/$d.json enseignes/$d.json details/$d.json solaire/$d.json icpe/$d.json contacts/$d.json friches/$d.json irep/$d.json; do git cat-file -e "$notre:$f" 2>/dev/null && git checkout -q "$notre" -- "$f"; done
@@ -115,10 +116,14 @@ jobs:
           meta = distant.get('_meta') or {}; meta.update({k: v for k, v in (notre.get('_meta') or {}).items() if k in ('maj', 'millesime', 'millesime_serveur', 'verifie', 'departements', 'hypotheses', 'app', 'source')})
           distant['_meta'] = meta
           json.dump(distant, open('bdnb.json', 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
+          import os
+          pv = json.load(open('pvgis_cache.json', encoding='utf-8')) if os.path.exists('pvgis_cache.json') else {}
+          pv.update(json.load(open('/tmp/bdnb/notre_pvgis.json', encoding='utf-8')))   # cache PVGIS : union des deux versions
+          json.dump(dict(sorted(pv.items())), open('pvgis_cache.json', 'w', encoding='utf-8'), separators=(',', ':'))
           print('bdnb.json fusionne : departement', d, 'reinjecte dans la version distante')
           PYEOF
                 then
-                  git add -- bdnb.json $(for x in parkings solaire icpe contacts friches irep enseignes details; do [ -d "$x" ] && echo "$x"; done)
+                  git add -- bdnb.json $([ -f pvgis_cache.json ] && echo pvgis_cache.json) $(for x in parkings solaire icpe contacts friches irep enseignes details; do [ -d "$x" ] && echo "$x"; done)
                   git commit -q -m "BDNB $d ($MILLESIME)" || true
                 else
                   echo "fusion de bdnb.json impossible pour $d"; return 1
@@ -131,8 +136,8 @@ jobs:
           mkdir -p /tmp/bdnb
           for d in ${{ steps.liste.outputs.deps }}; do
             echo "=== Département $d ($MILLESIME) ==="
-            if python prospects_bdnb.py "$d" --telecharger --millesime "$MILLESIME" --dossier /tmp/bdnb --relais bdnb.json --sans-excel --nettoyer; then
-              git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/ details/
+            if python -u prospects_bdnb.py "$d" --telecharger --millesime "$MILLESIME" --dossier /tmp/bdnb --relais bdnb.json --sans-excel --nettoyer; then
+              git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/ details/ $([ -f pvgis_cache.json ] && echo pvgis_cache.json)
               if git diff --cached --quiet; then echo "Aucun changement"; else
                 git commit -q -m "BDNB $d ($MILLESIME)"
                 publier "$d" || echo "Département $d calculé mais non publié"
@@ -149,7 +154,7 @@ jobs:
         run: |
           git config user.name 'relais-bot'
           git config user.email 'relais-bot@users.noreply.github.com'
-          git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/ details/
+          git add bdnb.json parkings/ solaire/ icpe/ contacts/ friches/ irep/ enseignes/ details/ $([ -f pvgis_cache.json ] && echo pvgis_cache.json)
           if git diff --cached --quiet; then echo 'Rien à publier'; else
             git commit -q -m "BDNB : vérification du millésime ($(date -u +%F))"
             for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break || { echo "push refusé, nouvel essai $i"; git rebase --abort 2>/dev/null || true; sleep 30; }; done

@@ -593,12 +593,27 @@ def caracteristiques_bat(an, hm, nv, mt, nat, ctr):
 # ---------------- PVGIS (Commission européenne) : production par kWc au site, relief compris ----------------
 PVGIS_API = 'https://re.jrc.ec.europa.eu/api/v5_3/PVcalc'
 _PVGIS = {}
+PVGIS_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pvgis_cache.json')   # valeurs stables : gardées d'un passage à l'autre
+_PVGIS_DISQUE = None
+
+def _cle_pvgis(lat, lon):
+    return (round(lat * 20) / 20, round(lon * 20) / 20)
+
+def _pvgis_disque():
+    global _PVGIS_DISQUE
+    if _PVGIS_DISQUE is None:
+        try:
+            with open(PVGIS_CACHE, encoding='utf-8') as f: _PVGIS_DISQUE = json.load(f)
+        except Exception: _PVGIS_DISQUE = {}
+    return _PVGIS_DISQUE
 
 def pvgis(lat, lon):
     """kWh/kWc/an à l'inclinaison optimale plein sud et sur toit plat (10°, plein sud), pertes 14 %, horizon du relief ;
-       mis en cache par maille de 0,05° (≈ 5 km : écart de productible négligeable)"""
-    cle = (round(lat * 20) / 20, round(lon * 20) / 20)
+       maille de 0,05° (≈ 5 km : écart de productible négligeable), mémorisée dans pvgis_cache.json"""
+    cle = _cle_pvgis(lat, lon); k = '%.2f,%.2f' % cle
     if cle in _PVGIS: return _PVGIS[cle]
+    disque = _pvgis_disque()
+    if k in disque: _PVGIS[cle] = disque[k]; return disque[k]
     r = None
     try:
         q = lambda extra: urllib.request.urlopen(urllib.request.Request(PVGIS_API + '?' + urllib.parse.urlencode(dict({'lat': cle[0], 'lon': cle[1], 'peakpower': 1, 'loss': 14, 'outputformat': 'json'}, **extra)), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=30)
@@ -607,19 +622,28 @@ def pvgis(lat, lon):
         r = {'kwh': int(round(fx['E_y'])), 'pente': int(round(ms['slope']['value'])), 'az': int(round(ms['azimuth']['value']))}
         with q({'angle': 10, 'aspect': 0}) as f: j = json.load(f)
         r['kwh10'] = int(round(j['outputs']['totals']['fixed']['E_y']))
+        disque[k] = r
     except Exception as e:  # noqa: BLE001
         print('  (PVGIS indisponible :', str(e)[:100], ')')
     _PVGIS[cle] = r
     return r
 
 def pvgis_sites(cibles):
+    import concurrent.futures as cf
+    sites = [st for e in cibles for st in (e.get('sites') or []) if st.get('lat') is not None and st.get('lon') is not None]
+    avant = len(_pvgis_disque())
+    manquants = list(dict.fromkeys(_cle_pvgis(st['lat'], st['lon']) for st in sites if '%.2f,%.2f' % _cle_pvgis(st['lat'], st['lon']) not in _pvgis_disque()))
+    if manquants:   # 4 requêtes à la fois (PVGIS : 30 appels/s au plus)
+        with cf.ThreadPoolExecutor(max_workers=4) as ex: list(ex.map(lambda c: pvgis(*c), manquants))
     n = 0
-    for e in cibles:
-        for st in e.get('sites') or []:
-            if st.get('lat') is not None and st.get('lon') is not None:
-                pv = pvgis(st['lat'], st['lon'])
-                if pv: st['pvgis'] = pv; n += 1
-    if n: print(f'  PVGIS : {n} sites ({len([v for v in _PVGIS.values() if v])} mailles interrogées)')
+    for st in sites:
+        pv = pvgis(st['lat'], st['lon'])
+        if pv: st['pvgis'] = pv; n += 1
+    if len(_pvgis_disque()) > avant:
+        try:
+            with open(PVGIS_CACHE, 'w', encoding='utf-8') as f: json.dump(dict(sorted(_pvgis_disque().items())), f, separators=(',', ':'))
+        except Exception as e: print('  (cache PVGIS non écrit :', e, ')')
+    if sites: print(f'  PVGIS : {n} sites sur {len(sites)} ({len(manquants)} mailles interrogées, {len(_pvgis_disque())} en cache)')
 
 def _finaliser(e, n_sites=8):
     e['com'] = ', '.join(c for c, _ in sorted(e['com'].items(), key=lambda kv: -kv[1])[:2]); e['via'] = sorted(e['via'])[:6]; e['parcelles'] = len(e['parcelles'])
@@ -818,14 +842,25 @@ HOTE_DMAX = 250   # m : équipement voisin retenu à défaut d'un équipement qu
 def hotes_osm(dep):
     """équipements susceptibles de « posséder » un grand parking (aéroport, hôpital, université, centre commercial, stade, gare, usine,
        zones d'activité nommées), avec emprise (bbox) et exploitant ; les zones (landuse) seulement si elles sont nommées"""
-    # requête découpée par clé OSM (une requête unique sur un grand département dépasse le délai des serveurs publics)
-    elements = []; echecs = 0
-    for cle in dict.fromkeys(k for k, _, _, _ in HOTES):
-        parts = ''.join(f'nwr["{k}"="{v}"]' + ('["name"]' if pr >= 3 or k == 'landuse' else '') + '(area.a);' for k, v, _, pr in HOTES if k == cle)
-        data = _overpass(f'[out:json][timeout:200];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;({parts});out tags center bb;')
-        if data is None or (not data.get('elements') and data.get('remark')): echecs += 1; print(f'  (équipements {cle} indisponibles)'); continue
-        elements += data.get('elements', [])
-    if echecs == len(set(k for k, _, _, _ in HOTES)): return None
+    # 4 requêtes groupées (une seule dépasse le délai des serveurs publics sur un grand département) ; un groupe en échec est repris clé par clé
+    GROUPES = [('aeroway', 'railway', 'man_made', 'tourism'), ('amenity',), ('shop',), ('leisure', 'office', 'landuse')]
+    def lancer(cles_, essais):
+        parts = ''.join(f'nwr["{k}"="{v}"]' + ('["name"]' if pr >= 3 or k == 'landuse' else '') + '(area.a);' for k, v, _, pr in HOTES if k in cles_)
+        d_ = _overpass(f'[out:json][timeout:200];area["ref:INSEE"="{dep}"]["admin_level"="6"]->.a;({parts});out tags center bb;', essais=essais)
+        return None if d_ is None or (not d_.get('elements') and d_.get('remark')) else d_.get('elements', [])
+    elements = []; echecs = 0; vus = set()
+    for g in GROUPES:
+        el = lancer(g, 2)
+        if el is None and len(g) > 1:
+            el = []
+            for k in g:
+                e1 = lancer((k,), 2)
+                if e1 is None: print(f'  (équipements {k} indisponibles)')
+                else: el += e1
+        if el is None: echecs += 1; print(f'  (équipements {"/".join(g)} indisponibles)'); continue
+        for x in el:
+            if (x.get('type'), x.get('id')) not in vus: vus.add((x.get('type'), x.get('id'))); elements.append(x)
+    if echecs == len(GROUPES): return None
     data = {'elements': elements}
     lib = {(k, v): (l, pr) for k, v, l, pr in HOTES}; rows = []
     for el in data.get('elements', []):
@@ -873,7 +908,7 @@ def _overpass(q, essais=3):
             try:
                 with urllib.request.urlopen(urllib.request.Request(base, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=300) as r: return json.load(r)
             except Exception as e: print('  (Overpass', base.split('/')[2], ':', e, ')')
-        time.sleep(30)
+        if essai < essais - 1: time.sleep(30)   # pas d'attente après le dernier essai
     return None
 
 # ---------------- enseignes sous marque (OSM) : magasins, restauration, stations, banques, salles de sport, hôtels ----------------
