@@ -53,6 +53,7 @@ SONDES = [
     ('dila', 'Journal officiel (open data DILA)', 'https://echanges.dila.gouv.fr/OPENDATA/JORF/', 'get', False),
     ('geoapi', 'Contours des communes (geo.api.gouv.fr)', 'https://geo.api.gouv.fr/departements/59/communes?fields=code&format=json', 'json', False),
     ('georisques', 'Installations classées (Géorisques)', 'https://www.georisques.gouv.fr/api/v1/installations_classees?departement=59&page_size=1&page=1', 'json', False),
+    ('georisquesOvh', 'Installations classées via le relais OVH (repli du relais GitHub)', 'http://zbpbasv.cluster121.hosting.ovh.net/suivimarche/georisques-icpe.php?departement=59&page=1&page_size=1', 'json', False),
     ('datagouv', 'data.gouv.fr (friches, IREP, FINESS, élus)', 'https://www.data.gouv.fr/api/1/datasets/?q=finess&page_size=1', 'json', False),
     ('agencebio', 'Agence Bio (annuaire des opérateurs)', 'https://opendata.agencebio.org/api/gouv/operateurs/?departement=59&nb=1', 'json', False),
 ]
