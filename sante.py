@@ -4,7 +4,8 @@ Une requête minimale par API interrogée par le navigateur (mêmes adresses que
 Paramètres › Sources dans index.html) plus les sources propres au relais (energy-charts, DILA, BDNB).
 Écrit sante.json {maj, n, n_ko, res: {clé: {ok, code, ms, msg}}} lu par l'application (Paramètres › Sources,
 colonne « Vu du relais »). Sort en erreur (exit 1) quand une source essentielle est en défaut, ou une source secondaire
-deux matins de suite (une panne d'un jour, fréquente sur Géorisques ou Overpass vus de GitHub, ne déclenche rien) :
+deux matins de suite, puis une fois par semaine tant qu'elle reste en panne (une panne d'un jour, fréquente sur Géorisques
+ou Overpass vus de GitHub, ne déclenche rien) :
 GitHub envoie alors un courriel « Run failed » au propriétaire du dépôt, sans qu'il soit besoin d'ouvrir l'application.
 Stdlib seulement, aucune clé.
 """
@@ -51,7 +52,7 @@ SONDES = [
     ('spot', 'Prix spot (energy-charts)', 'https://api.energy-charts.info/price?bzn=FR&start={hier}&end={hier}', 'json', False),
     ('dila', 'Journal officiel (open data DILA)', 'https://echanges.dila.gouv.fr/OPENDATA/JORF/', 'get', False),
     ('geoapi', 'Contours des communes (geo.api.gouv.fr)', 'https://geo.api.gouv.fr/departements/59/communes?fields=code&format=json', 'json', False),
-    ('georisques', 'Installations classées (Géorisques)', 'https://georisques.gouv.fr/api/v1/installations_classees?departement=59&page_size=1&page=1', 'json', False),
+    ('georisques', 'Installations classées (Géorisques)', 'https://www.georisques.gouv.fr/api/v1/installations_classees?departement=59&page_size=1&page=1', 'json', False),
     ('datagouv', 'data.gouv.fr (friches, IREP, FINESS, élus)', 'https://www.data.gouv.fr/api/1/datasets/?q=finess&page_size=1', 'json', False),
     ('agencebio', 'Agence Bio (annuaire des opérateurs)', 'https://opendata.agencebio.org/api/gouv/operateurs/?departement=59&nb=1', 'json', False),
 ]
@@ -142,7 +143,8 @@ if __name__ == '__main__':
         json.dump(out, f, ensure_ascii=False, indent=1)
     print('sante.json : %d sources, %d en défaut, %d à surveiller' % (out['n'], out['n_ko'], out['n_partiel']))
     # exit 1 : GitHub avertit le propriétaire du dépôt (« Run failed ») ; un simple 429 ne compte pas, une source secondaire seulement au 2e jour
-    alerte = [k for k, r in res.items() if r['ok'] is False and (r['vital'] or r.get('ko_jours', 1) >= 2)]
+    # source secondaire en panne durable (ex. Géorisques injoignable depuis GitHub) : courriel au 2e jour, puis une fois par semaine (9e, 16e jour…)
+    alerte = [k for k, r in res.items() if r['ok'] is False and (r['vital'] or (r.get('ko_jours', 1) >= 2 and (r.get('ko_jours', 1) - 2) % 7 == 0))]
     if alerte:
         print('ALERTE : ' + ', '.join('%s (%d j)' % (k, res[k].get('ko_jours', 1)) for k in alerte))
     sys.exit(1 if alerte else 0)

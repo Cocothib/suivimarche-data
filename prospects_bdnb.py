@@ -298,7 +298,7 @@ def bdappv_par_commune(dep, dossier):
 def icpe_departement(dep):
     rows = []; page = 1
     while page <= 30:
-        url = f'https://georisques.gouv.fr/api/v1/installations_classees?departement={dep}&page_size=1000&page={page}'
+        url = f'https://www.georisques.gouv.fr/api/v1/installations_classees?departement={dep}&page_size=1000&page={page}'
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: j = json.load(r)
         for x in j.get('data', []):
             if (x.get('regime') or '') == 'Non ICPE': continue
