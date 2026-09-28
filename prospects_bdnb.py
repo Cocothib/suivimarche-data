@@ -295,11 +295,25 @@ def bdappv_par_commune(dep, dossier):
         print('  (BDAPPV non exploité :', e, ')'); return None
 
 # ---------------- installations classées (Géorisques) ----------------
+GEORISQUES_ICPE = 'https://www.georisques.gouv.fr/api/v1/installations_classees'
+# Géorisques ne répond plus aux serveurs de GitHub (depuis le 24/09/2026) : relais PHP sur le serveur OVH de SuiviMarché (georisques-icpe.php)
+GEORISQUES_RELAIS = os.environ.get('GEORISQUES_RELAIS', 'http://zbpbasv.cluster121.hosting.ovh.net/suivimarche/georisques-icpe.php')   # http : le certificat OVH ne couvre pas cette adresse (données publiques)
+_GEORISQUES_DIRECT = [True]   # bascule définitive sur le relais OVH dès le premier échec direct
+
+def _icpe_page(dep, page):
+    q = f'?departement={dep}&page_size=1000&page={page}'
+    if _GEORISQUES_DIRECT[0]:
+        try:
+            with urllib.request.urlopen(urllib.request.Request(GEORISQUES_ICPE + q, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=30) as r: return json.load(r)
+        except Exception as e:
+            if not GEORISQUES_RELAIS: raise
+            print('  (Géorisques direct :', str(e)[:80], '→ relais OVH)'); _GEORISQUES_DIRECT[0] = False
+    with urllib.request.urlopen(urllib.request.Request(GEORISQUES_RELAIS + q, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=150) as r: return json.load(r)
+
 def icpe_departement(dep):
     rows = []; page = 1
     while page <= 30:
-        url = f'https://www.georisques.gouv.fr/api/v1/installations_classees?departement={dep}&page_size=1000&page={page}'
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'SuiviMarche-bdnb/1.0'}), timeout=120) as r: j = json.load(r)
+        j = _icpe_page(dep, page)
         for x in j.get('data', []):
             if (x.get('regime') or '') == 'Non ICPE': continue
             rub = [{'n': str(y.get('numeroRubrique') or ''), 'nature': str(y.get('nature') or '')[:80], 'q': y.get('quantiteTotale'), 'u': y.get('unite') or ''} for y in (x.get('rubriques') or [])[:8]]
