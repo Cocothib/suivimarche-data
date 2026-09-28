@@ -136,6 +136,10 @@ if __name__ == '__main__':
     for k, r in res.items():
         if r['ok'] is False:
             r['ko_jours'] = int((avant.get(k) or {}).get('ko_jours') or (1 if (avant.get(k) or {}).get('ok') is False else 0)) + 1
+    # Géorisques bloque GitHub mais le relais OVH le joint : le relais bascule seul (prospects_bdnb.py), pas d'alerte
+    if res.get('georisques', {}).get('ok') is not True and res.get('georisquesOvh', {}).get('ok') is True:
+        res['georisques']['ok'] = True; res['georisques'].pop('ko_jours', None)
+        res['georisques']['msg'] = 'injoignable depuis GitHub, relayé par le serveur OVH : ' + res['georisques']['msg']
     ko = [k for k, r in res.items() if r['ok'] is not True]
     for k, r in res.items():
         print('%-12s %-8s %6d ms  %s' % (k, 'OK' if r['ok'] is True else ('PARTIEL' if r['ok'] == 'partiel' else 'KO'), r['ms'], r['msg']))
