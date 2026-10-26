@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 
-UA = 'SuiviMarche-sante/1.0 (+https://github.com/Cocothib/suivimarche-data)'
+UA = 'SuiviMarche-sante/1.0 (+https://github.com/GenerationsRenouvelables/suivimarche-data)'
 DELAI = 25
 ODS_ODRE = 'https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets/'
 ODS_ENEDIS = 'https://opendata.enedis.fr/api/explore/v2.1/catalog/datasets/'

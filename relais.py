@@ -57,7 +57,7 @@ def log(*a):
 def get(url, retries=3, timeout=240):
     for i in range(retries):
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'suivimarche-relais/1.0 (github.com/Cocothib/suivimarche-data)'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'suivimarche-relais/1.0 (github.com/GenerationsRenouvelables/suivimarche-data)'})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001

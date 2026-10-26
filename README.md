@@ -1,6 +1,6 @@
 # suivimarche-data — relais de données pour SuiviMarché
 
-Dépôt public alimenté chaque matin par GitHub Actions (`relais.py`, bibliothèque standard Python, aucune clé d'API). L'outil [SuiviMarché](https://github.com/Cocothib/suivimarche) lit ces fichiers depuis `raw.githubusercontent.com/Cocothib/suivimarche-data/main/`.
+Dépôt public alimenté chaque matin par GitHub Actions (`relais.py`, bibliothèque standard Python, aucune clé d'API). L'outil [SuiviMarché](https://github.com/GenerationsRenouvelables/suivimarche) lit ces fichiers depuis `raw.githubusercontent.com/GenerationsRenouvelables/suivimarche-data/main/`.
 
 | Fichier | Contenu | Source |
 |---|---|---|
