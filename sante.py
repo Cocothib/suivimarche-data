@@ -46,6 +46,7 @@ SONDES = [
     ('overpass2', 'Overpass, serveur z (overpass-api.de)', 'https://z.overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
     ('overpass3', 'Overpass, serveur lz4 (overpass-api.de)', 'https://lz4.overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
     ('overpass4', 'Overpass, miroir de secours (maps.mail.ru)', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
+    ('overpass5', 'Overpass, miroir suisse (osm.ch)', 'https://overpass.osm.ch/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A10%5D%3Bnode%281%29%3Bout%3B', 'json', False),
     ('ign', 'Photos aériennes IGN (Géoplateforme)', 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=6&TILEROW=22&TILECOL=32&FORMAT=image%2Fjpeg', 'get', False),
     ('bdnbS3', 'Exports BDNB (CSTB)', 'https://open-data.s3.fr-par.scw.cloud/bdnb_millesime_{m}/millesime_{m}_dep90/open_data_millesime_{m}_dep90_csv.zip', 'head', False),
     # sources propres au relais (relais.py, prospects_bdnb.py)
